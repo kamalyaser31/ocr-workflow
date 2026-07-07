@@ -98,7 +98,12 @@ def merge_parts(progress_path, final_output_name_override=None):
         return
 
     output_parts_dir = os.path.dirname(progress_path)
-    final_output_path = os.path.join(".", final_output_name) # Save in root
+    final_output_path = os.path.join("md", final_output_name) # Save in md/ directory
+
+    # Ensure destination directory exists
+    dest_dir = os.path.dirname(final_output_path)
+    if dest_dir:
+        os.makedirs(dest_dir, exist_ok=True)
 
     if not is_split:
         # For single file workflow, just copy the validated part to the final location
@@ -106,7 +111,7 @@ def merge_parts(progress_path, final_output_name_override=None):
         part_file_path = os.path.join(output_parts_dir, chunk["output_file"])
         if os.path.exists(part_file_path):
             shutil.copy2(part_file_path, final_output_path)
-            print(f"File moved to root as: {final_output_name}")
+            print(f"File moved as: {final_output_path}")
         else:
             print(f"Error: Validated part file {part_file_path} not found.")
             return
@@ -124,7 +129,7 @@ def merge_parts(progress_path, final_output_name_override=None):
                     else:
                         print(f"Warning: File {part_file_path} missing for chunk {chunk['part']}")
 
-    print(f"\nSuccess: Process complete. Final file: '{final_output_name}'")
+    print(f"\nSuccess: Process complete. Final file: '{final_output_path}'")
 
     # Run Duplication Check before cleanup
     print("\nRunning duplication check on the final merged file...")

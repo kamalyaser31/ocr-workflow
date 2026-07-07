@@ -46,10 +46,10 @@ description: >
 ## ٣. المسار السريع (Fast Track) - للملفات الصغيرة (<= 20 صفحة)
 
 1. **الاستخلاص المباشر**: يقوم الوكيل الرئيسي بقراءة صفحات ملف PDF مباشرة صفحة صفحة باستخدام أداة `view_file`.
-2. **الكتابة والتطبيق**: يكتب الوكيل النص المستخلص مباشرة في ملف Markdown نهائي في الجذر بالاسم المطابق لملف الـ PDF الأصلي (مثال: `pdf/Assignment 1.pdf` ينتج `Assignment 1.md` في مجلد الجذر)، مع الالتزام التام بقواعد النسخ وفواصل الصفحات `--- Page [Number] ---` الموثقة في `references/transcription_rules.md`.
+2. **الكتابة والتطبيق**: يكتب الوكيل النص المستخلص مباشرة في ملف Markdown نهائي داخل مجلد `md/` بالاسم المطابق لملف الـ PDF الأصلي (مثال: `pdf/Assignment 1.pdf` ينتج `md/Assignment 1.md`)، مع الالتزام التام بقواعد النسخ وفواصل الصفحات `--- Page [Number] ---` الموثقة في `references/transcription_rules.md`.
 3. **التحويل المباشر لـ Word**: فور الانتهاء، يشغل الوكيل سكربت التحويل لملف Word تلقائياً:
    ```bash
-   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "filename.md" "filename.docx"
+   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
    ```
 
 ---
@@ -85,9 +85,9 @@ description: >
    ```bash
    python .agents/skills/ocr-transcription/scripts/merge_parts.py
    ```
-2. إذا اجتاز المستند فحص التكرار (Duplication Check) بنجاح، يُتم السكربت تنظيف وحذف الملفات الوسيطة وملف المتابعة، ويُسلم المستند النهائي في المجلد الحالي.
+2. إذا اجتاز المستند فحص التكرار (Duplication Check) بنجاح، يُتم السكربت تنظيف وحذف الملفات الوسيطة وملف المتابعة، ويُسلم المستند النهائي في مجلد `md/`.
 3. تشغيل سكربت التحويل لملف Word تلقائياً:
    ```bash
-   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "filename.md" "filename.docx"
+   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
    ```
    *(يقوم السكربت بإنشاء مجلد المخرجات تلقائياً في حال إدراجه بالمسار).*
