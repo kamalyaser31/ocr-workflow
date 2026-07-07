@@ -12,7 +12,10 @@ dist/
 *.tmp
 .idea/
 .vscode/
-ocr workflow/md/
-ocr workflow/output_parts/
-ocr workflow/pdf/
-ocr workflow/word/
+md/
+output_parts/
+pdf/
+word/
+temp.zip
+test_arabic.docx
+
