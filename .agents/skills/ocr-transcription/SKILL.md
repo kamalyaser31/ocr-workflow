@@ -2,13 +2,9 @@
 name: ocr-transcription
 description: >
   Orchestrates end-to-end OCR text extraction from PDF books and documents.
-  Splits large PDFs, dispatches subagents for parallel transcription using
-  view_file (no external OCR libraries), validates structural integrity,
-  and merges final Markdown output. Use when user asks to "استخلص نص هذا كتاب",
-  "حوّل هذا PDF إلى نص", "نسّخ هذا المستند", "استخرج النص من هذا الملف",
-  "extract text from PDF", "OCR this book", "transcribe this document",
-  "معالجة كتاب", "تفريغ كتاب", or any request involving extracting, transcribing,
-  or digitizing text from PDF files.
+  Use this skill ALWAYS when the user requests text extraction, OCR, transcription,
+  book processing, or document conversion from PDF files, even if they don't
+  explicitly name this skill.
 ---
 
 # مهارة استخلاص النصوص وتنسيق الأجزاء (OCR Transcription Skill)
@@ -26,7 +22,8 @@ description: >
 - **تعدد الملفات**: عند وجود عدة ملفات PDF في مجلد المصدر، يستشير المستخدم تفاعلياً لتحديد طريقة المعالجة (ملف واحد أم بالتتابع).
 - **حظر الاستخلاص الخارجي**: يُحظر استخدام أي أدوات خارجية أو مكتبات OCR؛ القراءة حصرية عبر أداة `view_file` للنموذج (انظر تفصيل الحظر في `transcription_rules.md`).
 - **حجم الـ chunk الثابت**: 20 صفحة كحد أقصى لكل **chunk**.
-- **المخرجات الافتراضية**: تُكتب مخرجات الدمج النهائي والتحويل إلى المجلد النشط الحالي `.` ما لم يحدد مسار فرعي مخصص (يتم إنشاؤه تلقائياً).
+- **المخرجات الافتراضية**: تُكتب مخرجات الدمج النهائي والتحويل إلى مجلدي `md/` و`word/` افتراضياً للحفاظ على نظافة جذر المشروع (ويتم إنشاؤهما تلقائياً).
+
 
 ---
 
@@ -51,6 +48,8 @@ description: >
    ```bash
    python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
    ```
+   *ملاحظة للوكيل*: إذا فشل التحويل بسبب عدم وجود أداة `pandoc` وتعذر تثبيتها صامتاً، يجب عليك إبلاغ المستخدم فوراً بالخطأ وعرض أمر التثبيت اليدوي التالي: `winget install JohnMacFarlane.Pandoc`.
+
 
 ---
 
@@ -91,3 +90,5 @@ description: >
    python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
    ```
    *(يقوم السكربت بإنشاء مجلد المخرجات تلقائياً في حال إدراجه بالمسار).*
+   *ملاحظة للوكيل*: إذا فشل التحويل بسبب عدم وجود أداة `pandoc` وتعذر تثبيتها صامتاً، يجب عليك إبلاغ المستخدم فوراً بالخطأ وعرض أمر التثبيت اليدوي التالي: `winget install JohnMacFarlane.Pandoc`.
+
