@@ -30,23 +30,33 @@ description: >
 ## ٢. بروتوكول التنفيذ التتابعي (Sequential Execution Pipeline)
 
 ### الخطوة الأولى: التحقق من عدد الصفحات والتفريع
-1. يقرأ الوكيل الرئيسي عدد صفحات ملف الـ PDF أولاً بتشغيل السكربت بالمعامل `--info_only`:
+1. يقرأ الوكيل الرئيسي عدد صفحات ملف الـ PDF أولاً بتشغيل السكربت بالمعامل `--info_only` (مع إمكانية تحديد الصفحات المخصصة عبر معامل `--pages` إن طلب المستخدم ذلك):
    ```bash
+   # معالجة كاملة
    python .agents/skills/ocr-transcription/scripts/splitt_pdf.py "pdf/input.pdf" --info_only
+
+   # معالجة صفحات مخصصة
+   python .agents/skills/ocr-transcription/scripts/splitt_pdf.py "pdf/input.pdf" --pages "5,8,10-12" --info_only
    ```
 2. **التفريع الإلزامي**:
-   - **إذا كان عدد الصفحات 20 صفحة أو أقل**: يسلك الوكيل **المسار السريع (Fast Track)** الموثق في القسم (٣).
-   - **إذا كان عدد الصفحات أكثر من 20 صفحة**: يسلك الوكيل **المسار القياسي المجزأ (Chunked Pipeline)** الموثق في القسم (٤).
+   - **إذا كان إجمالي عدد الصفحات المحددة للمعالجة هو 20 صفحة أو أقل**: يسلك الوكيل **المسار السريع (Fast Track)** الموثق في القسم (٣).
+   - **إذا كان إجمالي عدد الصفحات المحددة للمعالجة أكثر من 20 صفحة**: يسلك الوكيل **المسار القياسي المجزأ (Chunked Pipeline)** الموثق في القسم (٤).
 
 ---
 
 ## ٣. المسار السريع (Fast Track) - للملفات الصغيرة (<= 20 صفحة)
 
-1. **الاستخلاص المباشر**: يقوم الوكيل الرئيسي بقراءة صفحات ملف PDF مباشرة صفحة صفحة باستخدام أداة `view_file`.
-2. **الكتابة والتطبيق**: يكتب الوكيل النص المستخلص مباشرة في ملف Markdown نهائي داخل مجلد `md/` بالاسم المطابق لملف الـ PDF الأصلي (مثال: `pdf/Assignment 1.pdf` ينتج `md/Assignment 1.md`)، مع الالتزام التام بقواعد النسخ وفواصل الصفحات `--- Page [Number] ---` الموثقة في `references/transcription_rules.md`.
+1. **التجهيز والاستخلاص**:
+   - في حال تحديد صفحات مخصصة، يجب تشغيل سكربت التقسيم أولاً لتجهيز نطاقات الصفحات الخام في مجلد الأجزاء:
+     ```bash
+     python .agents/skills/ocr-transcription/scripts/splitt_pdf.py "pdf/input.pdf" --pages "5,8,10-12"
+     ```
+     ثم يقوم الوكيل الرئيسي بقراءة صفحات أجزاء الـ PDF الناتجة في `output_parts/` باستخدام `view_file` (التي ستحتوي فقط على الصفحات المطلوبة ولكن بأرقامها الحقيقية).
+   - في حال المعالجة الكاملة لكامل الملف (<= 20 صفحة)، يقرأ الوكيل الصفحات مباشرة من ملف الـ PDF الأصلي باستخدام `view_file`.
+2. **الكتابة والتطبيق**: يكتب الوكيل النص المستخلص مباشرة في ملف Markdown نهائي داخل مجلد `md/` مع إلحاق لاحقة الصفحات الآمنة للملف المخصص (مثال: `md/Assignment 1_p5_8_10-12.md` أو `md/Assignment 1.md` للملف الكامل)، مع الالتزام التام بقواعد النسخ وفواصل الصفحات `--- Page [Number] ---` بالترقيم الأصلي الموثقة في `references/transcription_rules.md`.
 3. **التحويل المباشر لـ Word**: فور الانتهاء، يشغل الوكيل سكربت التحويل لملف Word تلقائياً:
    ```bash
-   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
+   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename_p5_8_10-12.md" "word/filename_p5_8_10-12.docx"
    ```
    *ملاحظة للوكيل*: إذا فشل التحويل بسبب عدم وجود أداة `pandoc` وتعذر تثبيتها صامتاً، يجب عليك إبلاغ المستخدم فوراً بالخطأ وعرض أمر التثبيت اليدوي التالي: `winget install JohnMacFarlane.Pandoc`.
 
@@ -84,10 +94,10 @@ description: >
    ```bash
    python .agents/skills/ocr-transcription/scripts/merge_parts.py
    ```
-2. إذا اجتاز المستند فحص التكرار (Duplication Check) بنجاح، يُتم السكربت تنظيف وحذف الملفات الوسيطة وملف المتابعة، ويُسلم المستند النهائي في مجلد `md/`.
+2. إذا اجتاز المستند فحص التكرار (Duplication Check) بنجاح (علماً بأن الفحص يتم تخطيه تلقائياً وصامتاً في حال معالجة صفحات مخصصة)، يُتم السكربت تنظيف وحذف الملفات الوسيطة وملف المتابعة، ويُسلم المستند النهائي في مجلد `md/`.
 3. تشغيل سكربت التحويل لملف Word تلقائياً:
    ```bash
-   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename.md" "word/filename.docx"
+   python .agents/skills/ocr-transcription/scripts/convert_to_docx.py "md/filename_p5_8_10-12.md" "word/filename_p5_8_10-12.docx"
    ```
    *(يقوم السكربت بإنشاء مجلد المخرجات تلقائياً في حال إدراجه بالمسار).*
    *ملاحظة للوكيل*: إذا فشل التحويل بسبب عدم وجود أداة `pandoc` وتعذر تثبيتها صامتاً، يجب عليك إبلاغ المستخدم فوراً بالخطأ وعرض أمر التثبيت اليدوي التالي: `winget install JohnMacFarlane.Pandoc`.

@@ -81,6 +81,7 @@ def merge_parts(progress_path, final_output_name_override=None):
         progress_data = json.load(f)
 
     is_split = progress_data.get("is_split", True)
+    is_page_selection = progress_data.get("is_page_selection", False)
     chunks = progress_data.get("chunks", [])
     
     # Use final_filename from progress.json if available, or fallback to override or default
@@ -132,28 +133,31 @@ def merge_parts(progress_path, final_output_name_override=None):
     print(f"\nSuccess: Process complete. Final file: '{final_output_path}'")
 
     # Run Duplication Check before cleanup
-    print("\nRunning duplication check on the final merged file...")
-    try:
-        result = extract_page_samples(final_output_path)
-        if result:
-            # Write preview file
-            sampling_file = "sampling_preview.txt"
-            with open(sampling_file, "w", encoding='utf-8') as f:
-                f.write(result)
-            
-            if "WARNING:" in result:
-                print("\n" + "="*50)
-                print("WARNING: Duplication detected in the merged file!")
-                # Extract and print only the report part
-                report_part = result.split("==================================================")[1].strip()
-                print(report_part)
-                print("="*50 + "\n")
-                print("Cleanup aborted. Intermediate files have been preserved for debugging.")
-                return False
-            else:
-                print("Duplication check passed. No duplicates found.")
-    except Exception as e:
-        print(f"Warning: Could not run duplication check due to error: {e}")
+    if not is_page_selection:
+        print("\nRunning duplication check on the final merged file...")
+        try:
+            result = extract_page_samples(final_output_path)
+            if result:
+                # Write preview file
+                sampling_file = "sampling_preview.txt"
+                with open(sampling_file, "w", encoding='utf-8') as f:
+                    f.write(result)
+                
+                if "WARNING:" in result:
+                    print("\n" + "="*50)
+                    print("WARNING: Duplication detected in the merged file!")
+                    # Extract and print only the report part
+                    report_part = result.split("==================================================")[1].strip()
+                    print(report_part)
+                    print("="*50 + "\n")
+                    print("Cleanup aborted. Intermediate files have been preserved for debugging.")
+                    return False
+                else:
+                    print("Duplication check passed. No duplicates found.")
+        except Exception as e:
+            print(f"Warning: Could not run duplication check due to error: {e}")
+    else:
+        print("\nSkipping duplication check (page selection workflow).")
 
     # Final Cleanup: Delete verified part files (Markdown) AND source chunk files (PDF)
     print("\nStarting final cleanup of verified part files and PDF chunks...")
