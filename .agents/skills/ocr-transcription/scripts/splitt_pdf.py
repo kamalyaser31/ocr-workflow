@@ -3,25 +3,22 @@ import json
 import argparse
 import sys
 from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
 
 def safe_load_pdf(input_pdf_path: str):
     """Safely loads a PDF file, checking for corruption, encryption, and empty files."""
     if not os.path.exists(input_pdf_path):
-        print(f"Error: PDF file not found at '{input_pdf_path}'")
-        sys.exit(1)
+        raise FileNotFoundError(f"PDF file not found at '{input_pdf_path}'")
     try:
         reader = PdfReader(input_pdf_path)
         if reader.is_encrypted:
-            print(f"Error: The PDF file '{input_pdf_path}' is encrypted or password-protected.")
-            sys.exit(1)
+            raise ValueError(f"The PDF file '{input_pdf_path}' is encrypted or password-protected.")
         total_pages = len(reader.pages)
         if total_pages == 0:
-            print(f"Error: The PDF file '{input_pdf_path}' contains 0 pages or is corrupted.")
-            sys.exit(1)
+            raise ValueError(f"The PDF file '{input_pdf_path}' contains 0 pages or is corrupted.")
         return reader, total_pages
-    except Exception as e:
-        print(f"Error: Failed to read PDF file '{input_pdf_path}'. It may be corrupted or invalid. Detail: {e}")
-        sys.exit(1)
+    except (PdfReadError, OSError) as e:
+        raise RuntimeError(f"Failed to read PDF file '{input_pdf_path}'. It may be corrupted or invalid. Detail: {e}") from e
 
 def get_pdf_info(input_pdf_path: str):
     """Returns the total number of pages in the PDF."""
@@ -113,6 +110,30 @@ def make_windows_safe_suffix(pages_str: str) -> str:
     safe_str = pages_str.replace(",", "_").replace(" ", "")
     return f"_p{safe_str}"
 
+def _write_chunk_pdfs(reader, chunks_pages, base_name, output_dir, progress_data):
+    """Writes split chunk PDFs to output_dir and updates progress_data."""
+    for idx, (start_page, end_page) in enumerate(chunks_pages):
+        writer = PdfWriter()
+        # pypdf pages are 0-indexed, start_page and end_page are 1-indexed
+        for page_num in range(start_page - 1, end_page):
+            writer.add_page(reader.pages[page_num])
+
+        output_filename = f"{base_name}_part_{idx + 1}_p{start_page}-{end_page}.pdf"
+        output_path = os.path.join(output_dir, output_filename)
+        
+        with open(output_path, "wb") as f_out:
+            writer.write(f_out)
+
+        progress_data["chunks"].append({
+            "part": idx + 1,
+            "filename": output_filename,
+            "start_page": start_page,
+            "end_page": end_page,
+            "status": "pending",
+            "output_file": ""
+        })
+        print(f"Created: {output_filename} (Original Pages: {start_page} to {end_page})")
+
 def split_pdf(input_pdf_path: str, output_dir: str, pages_str: str = None, pages_per_file: int = 20) -> None:
     """
     Split selected pages of a PDF into contiguous parts, saving them as chunk PDFs
@@ -145,7 +166,7 @@ def split_pdf(input_pdf_path: str, output_dir: str, pages_str: str = None, pages
             chunks_pages.append((sub_start, sub_end))
             
     num_files = len(chunks_pages)
-    # is_split is True if we have multiple chunks OR if we are processing a subset of the full PDF
+    # is_split is True only when there are multiple chunk PDF files to merge
     is_split = (num_files > 1)
     
     progress_data = {
@@ -176,27 +197,7 @@ def split_pdf(input_pdf_path: str, output_dir: str, pages_str: str = None, pages
         print("Single file workflow initialized (no splitting).")
     else:
         print(f"Number of output chunk files: {num_files}")
-        for idx, (start_page, end_page) in enumerate(chunks_pages):
-            writer = PdfWriter()
-            # pypdf pages are 0-indexed, start_page and end_page are 1-indexed
-            for page_num in range(start_page - 1, end_page):
-                writer.add_page(reader.pages[page_num])
-
-            output_filename = f"{base_name}_part_{idx + 1}_p{start_page}-{end_page}.pdf"
-            output_path = os.path.join(output_dir, output_filename)
-            
-            with open(output_path, "wb") as f_out:
-                writer.write(f_out)
-
-            progress_data["chunks"].append({
-                "part": idx + 1,
-                "filename": output_filename,
-                "start_page": start_page,
-                "end_page": end_page,
-                "status": "pending",
-                "output_file": ""
-            })
-            print(f"Created: {output_filename} (Original Pages: {start_page} to {end_page})")
+        _write_chunk_pdfs(reader, chunks_pages, base_name, output_dir, progress_data)
 
     # Save the progress tracker
     progress_path = os.path.join(output_dir, "progress.json")
@@ -214,14 +215,18 @@ if __name__ == "__main__":
     parser.add_argument("--info_only", action="store_true", help="Only show total pages / selected pages info.")
     args = parser.parse_args()
 
-    if args.info_only:
-        total = get_pdf_info(args.input_pdf)
-        if args.pages:
-            selected = parse_pages(args.pages, total)
-            print(f"Total pages: {total}")
-            print(f"Selected pages: {len(selected)}")
+    try:
+        if args.info_only:
+            total = get_pdf_info(args.input_pdf)
+            if args.pages:
+                selected = parse_pages(args.pages, total)
+                print(f"Total pages: {total}")
+                print(f"Selected pages: {len(selected)}")
+            else:
+                print(f"Total pages: {total}")
         else:
-            print(f"Total pages: {total}")
-    else:
-        split_pdf(args.input_pdf, "output_parts", args.pages, args.pages_per_file)
+            split_pdf(args.input_pdf, "output_parts", args.pages, args.pages_per_file)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 

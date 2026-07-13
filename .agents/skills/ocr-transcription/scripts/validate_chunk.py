@@ -1,18 +1,23 @@
 import json
 import os
 import re
+import sys
+import argparse
+import io
+
+def _check_page_markers(output_text: str, start_page: int, end_page: int):
+    """Pure validation logic: checks page markers count and sequence. No I/O."""
+    expected_pages = end_page - start_page + 1
+    markers = re.findall(r"--- Page (\d+) ---", output_text)
+    expected_numbers = list(range(start_page, end_page + 1))
+    actual_numbers = [int(m) for m in markers]
+    is_valid = (len(markers) == expected_pages) and (actual_numbers == expected_numbers)
+    return is_valid, len(markers), expected_pages, actual_numbers, expected_numbers
 
 def validate_chunk(output_text, part_info, progress_path, output_file_path):
-    expected_pages = part_info["end_page"] - part_info["start_page"] + 1
-    
-    # Check for markers: --- Page [Number] ---
-    markers = re.findall(r"--- Page (\d+) ---", output_text)
-    
-    # Also check the actual numbers in markers
-    expected_numbers = list(range(part_info["start_page"], part_info["end_page"] + 1))
-    actual_numbers = [int(m) for m in markers]
-    
-    is_valid = (len(markers) == expected_pages) and (actual_numbers == expected_numbers)
+    is_valid, markers_count, expected_pages, actual_numbers, expected_numbers = _check_page_markers(
+        output_text, part_info["start_page"], part_info["end_page"]
+    )
     
     # Update progress
     with open(progress_path, "r", encoding="utf-8") as f:
@@ -36,7 +41,7 @@ def validate_chunk(output_text, part_info, progress_path, output_file_path):
                 print(f"Chunk {part_info['part']} validated and saved as {output_filename}.")
             else:
                 chunk["status"] = "failed"
-                print(f"Chunk {part_info['part']} failed validation. Markers found: {len(markers)} / Expected: {expected_pages}")
+                print(f"Chunk {part_info['part']} failed validation. Markers found: {markers_count} / Expected: {expected_pages}")
                 print(f"Numbers found: {actual_numbers} / Expected: {expected_numbers}")
             break
             
@@ -92,12 +97,8 @@ def run_validation(part_nums, progress_path, output_dir):
 
 
 if __name__ == "__main__":
-    import sys
-    import argparse
-
     # Force UTF-8 for stdout to prevent Windows encoding errors
     if sys.stdout.encoding != 'utf-8':
-        import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
     parser = argparse.ArgumentParser(

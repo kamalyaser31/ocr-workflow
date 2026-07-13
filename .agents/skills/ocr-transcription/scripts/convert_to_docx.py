@@ -3,11 +3,6 @@ import sys
 import subprocess
 import shutil
 
-# Force UTF-8 for stdout to prevent Windows encoding errors
-if sys.stdout.encoding != 'utf-8':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-
 def find_pandoc():
     """Finds the pandoc executable in PATH or default installation locations."""
     # Check standard PATH
@@ -15,16 +10,23 @@ def find_pandoc():
     if pandoc_path:
         return "pandoc"
     
-    # Check typical Windows installation directories
-    possible_paths = [
-        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Pandoc", "pandoc.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "Pandoc", "pandoc.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Pandoc", "pandoc.exe"),
-        os.path.expandvars("%LOCALAPPDATA%\\Pandoc\\pandoc.exe")
-    ]
+    # Check typical Windows installation directories using environment variables
+    program_files = os.environ.get("ProgramFiles", "")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", "")
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    
+    possible_paths = []
+    if program_files:
+        possible_paths.append(os.path.join(program_files, "Pandoc", "pandoc.exe"))
+    if program_files_x86:
+        possible_paths.append(os.path.join(program_files_x86, "Pandoc", "pandoc.exe"))
+    if local_app_data:
+        possible_paths.append(os.path.join(local_app_data, "Pandoc", "pandoc.exe"))
+        
+    possible_paths.append(os.path.expandvars("%LOCALAPPDATA%\\Pandoc\\pandoc.exe"))
     
     for path in possible_paths:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             return path
             
     return None
@@ -56,7 +58,7 @@ def has_arabic(md_path):
         with open(md_path, 'r', encoding='utf-8') as f:
             content = f.read(10000)  # Scan the first 10k characters
             return any(ord(char) in range(0x0600, 0x06FF) for char in content)
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return False
 
 def markdown_to_docx(md_path: str, docx_path: str) -> bool:
@@ -112,6 +114,11 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
         return False
 
 if __name__ == "__main__":
+    # Force UTF-8 for stdout to prevent Windows encoding errors
+    if sys.stdout.encoding != 'utf-8':
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
     import argparse
     parser = argparse.ArgumentParser(description="Convert Markdown to Word Document (.docx) using Pandoc.")
     parser.add_argument("input_md", help="Path to the input Markdown file.")

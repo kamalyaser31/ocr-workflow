@@ -2,6 +2,8 @@ import json
 import os
 import shutil
 import re
+import argparse
+import sys
 
 def extract_page_samples(file_path, lines_count=8, interval=1):
     if not os.path.exists(file_path):
@@ -164,8 +166,9 @@ def merge_parts(progress_path, final_output_name_override=None):
                     duplication_failed = True
                 else:
                     print("Duplication check passed. No duplicates found.")
-        except Exception as e:
-            print(f"Warning: Could not run duplication check due to error: {e}")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Error: Duplication check failed unexpectedly: {e}")
+            duplication_failed = True
     else:
         print("\nSkipping duplication check (page selection workflow).")
 
@@ -219,14 +222,21 @@ def merge_parts(progress_path, final_output_name_override=None):
     return True
 
 if __name__ == "__main__":
-    import sys
     # Force UTF-8 for stdout to prevent Windows encoding errors
     if sys.stdout.encoding != 'utf-8':
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-    progress_file = sys.argv[1] if len(sys.argv) > 1 else os.path.join("output_parts", "progress.json")
-    final_name = sys.argv[2] if len(sys.argv) > 2 else None
+    parser = argparse.ArgumentParser(description="Merge completed OCR parts and run duplication checks.")
+    parser.add_argument(
+        "--progress", default=os.path.join("output_parts", "progress.json"),
+        help="Path to progress.json tracker file (default: output_parts/progress.json)."
+    )
+    parser.add_argument(
+        "--output-name", default=None,
+        help="Optional override for the final merged Markdown output file name."
+    )
+    args = parser.parse_args()
     
-    success = merge_parts(progress_file, final_name)
+    success = merge_parts(args.progress, args.output_name)
     sys.exit(0 if success is not False else 1)
