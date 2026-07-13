@@ -32,6 +32,7 @@ def parse_pages(pages_str: str, total_pages: int) -> list:
     """
     Parses a page selection string like "5-15", "5,8,10-12", "10-" or "-20"
     and returns a sorted list of unique 1-indexed page numbers.
+    Prints warnings for malformed inputs.
     """
     if not pages_str:
         return list(range(1, total_pages + 1))
@@ -42,29 +43,43 @@ def parse_pages(pages_str: str, total_pages: int) -> list:
         part = part.strip()
         if not part:
             continue
+            
         if "-" in part:
-            split_parts = part.split("-")
-            if len(split_parts) == 2:
-                start_str, end_str = split_parts
-                start_str = start_str.strip()
-                end_str = end_str.strip()
+            if part.count("-") > 1:
+                print(f"Warning: Ignoring malformed page range '{part}' (multiple dashes detected).")
+                continue
                 
+            split_parts = part.split("-")
+            start_str, end_str = split_parts
+            start_str = start_str.strip()
+            end_str = end_str.strip()
+            
+            try:
                 start = int(start_str) if start_str else 1
                 end = int(end_str) if end_str else total_pages
                 
-                # Boundary checking
-                start = max(1, min(start, total_pages))
-                end = max(1, min(end, total_pages))
+                # Check bounds and warn if necessary
+                if start < 1 or start > total_pages or end < 1 or end > total_pages:
+                    print(f"Warning: Page range '{part}' exceeds document bounds (1 to {total_pages}). Out-of-bounds parts will be ignored.")
                 
-                if start <= end:
-                    selected_pages.update(range(start, end + 1))
+                start_clamped = max(1, min(start, total_pages))
+                end_clamped = max(1, min(end, total_pages))
+                
+                if start_clamped <= end_clamped:
+                    selected_pages.update(range(start_clamped, end_clamped + 1))
+                else:
+                    print(f"Warning: Ignoring invalid range '{part}' (start page is greater than end page).")
+            except ValueError:
+                print(f"Warning: Ignoring malformed page range '{part}' (non-numeric values found).")
         else:
             try:
                 page = int(part)
                 if 1 <= page <= total_pages:
                     selected_pages.add(page)
+                else:
+                    print(f"Warning: Ignoring page number '{page}' (out of document bounds 1 to {total_pages}).")
             except ValueError:
-                pass
+                print(f"Warning: Ignoring invalid page token '{part}' (not a number).")
                 
     return sorted(list(selected_pages))
 
