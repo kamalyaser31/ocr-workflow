@@ -1,12 +1,32 @@
 import os
 import json
 import argparse
+import sys
 from pypdf import PdfReader, PdfWriter
+
+def safe_load_pdf(input_pdf_path: str):
+    """Safely loads a PDF file, checking for corruption, encryption, and empty files."""
+    if not os.path.exists(input_pdf_path):
+        print(f"Error: PDF file not found at '{input_pdf_path}'")
+        sys.exit(1)
+    try:
+        reader = PdfReader(input_pdf_path)
+        if reader.is_encrypted:
+            print(f"Error: The PDF file '{input_pdf_path}' is encrypted or password-protected.")
+            sys.exit(1)
+        total_pages = len(reader.pages)
+        if total_pages == 0:
+            print(f"Error: The PDF file '{input_pdf_path}' contains 0 pages or is corrupted.")
+            sys.exit(1)
+        return reader, total_pages
+    except Exception as e:
+        print(f"Error: Failed to read PDF file '{input_pdf_path}'. It may be corrupted or invalid. Detail: {e}")
+        sys.exit(1)
 
 def get_pdf_info(input_pdf_path: str):
     """Returns the total number of pages in the PDF."""
-    reader = PdfReader(input_pdf_path)
-    return len(reader.pages)
+    _, total_pages = safe_load_pdf(input_pdf_path)
+    return total_pages
 
 def parse_pages(pages_str: str, total_pages: int) -> list:
     """
@@ -86,8 +106,7 @@ def split_pdf(input_pdf_path: str, output_dir: str, pages_str: str = None, pages
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    reader = PdfReader(input_pdf_path)
-    total_pages = len(reader.pages)
+    reader, total_pages = safe_load_pdf(input_pdf_path)
     base_name = os.path.splitext(os.path.basename(input_pdf_path))[0]
     
     # Parse selected pages

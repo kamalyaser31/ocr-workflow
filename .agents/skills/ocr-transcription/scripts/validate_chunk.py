@@ -51,10 +51,10 @@ def resolve_temp_path(part_num, output_dir):
 
 
 def run_validation(part_nums, progress_path, output_dir):
-    """Validates a list of parts and returns (passed, failed) counts."""
+    """Validates a list of parts and returns (passed, failed, skipped) counts."""
     if not os.path.exists(progress_path):
         print(f"Error: Progress file not found at {progress_path}")
-        return 0, 0
+        return 0, 0, 0
 
     with open(progress_path, "r", encoding="utf-8") as f:
         progress_data = json.load(f)
@@ -64,18 +64,19 @@ def run_validation(part_nums, progress_path, output_dir):
 
     passed = 0
     failed = 0
+    skipped = 0
 
     for part_num in part_nums:
         part_info = chunk_map.get(part_num)
         if not part_info:
             print(f"[SKIP] Part {part_num} not found in progress.json")
-            failed += 1
+            skipped += 1
             continue
 
         temp_path = resolve_temp_path(part_num, output_dir)
         if not os.path.exists(temp_path):
             print(f"[SKIP] Part {part_num}: temp file not found at {temp_path}")
-            failed += 1
+            skipped += 1
             continue
 
         with open(temp_path, "r", encoding="utf-8") as f:
@@ -87,7 +88,7 @@ def run_validation(part_nums, progress_path, output_dir):
         else:
             failed += 1
 
-    return passed, failed
+    return passed, failed, skipped
 
 
 if __name__ == "__main__":
@@ -144,10 +145,10 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    passed, failed = run_validation(part_nums, args.progress, args.output_dir)
+    passed, failed, skipped = run_validation(part_nums, args.progress, args.output_dir)
 
     print(f"\n{'='*40}")
-    print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
+    print(f"Results: {passed} passed, {failed} failed, {skipped} skipped, {passed + failed + skipped} total")
     print(f"{'='*40}")
 
     sys.exit(0 if failed == 0 else 1)

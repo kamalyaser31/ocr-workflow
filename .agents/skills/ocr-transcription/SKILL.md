@@ -5,6 +5,7 @@ description: >
   Use this skill ALWAYS when the user requests text extraction, OCR, transcription,
   book processing, or document conversion from PDF files, even if they don't
   explicitly name this skill.
+disable-model-invocation: true
 ---
 
 # مهارة استخلاص النصوص وتنسيق الأجزاء (OCR Transcription Skill)

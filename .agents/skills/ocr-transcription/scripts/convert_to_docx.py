@@ -91,6 +91,13 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
         cmd.extend(["-M", "dir=rtl"])
         print("Arabic text detected. Enabled Right-to-Left (RTL) formatting.")
         
+    # Check for reference template document for styling
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    reference_doc_path = os.path.join(script_dir, "reference.docx")
+    if os.path.exists(reference_doc_path):
+        cmd.extend(["--reference-doc", reference_doc_path])
+        print(f"Using reference document for styling: {reference_doc_path}")
+        
     print(f"Executing: {' '.join(cmd)}")
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
