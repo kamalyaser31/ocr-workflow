@@ -189,7 +189,7 @@ def prepare_split_state(input_pdf_path, pages_str, pages_per_file):
         selected_pages,
     )
     progress_data["is_page_selection"] = bool(pages_str)
-    progress_data["is_split"] = len(chunk_ranges) > 1
+    progress_data["is_split"] = len(chunk_ranges) > 1 or progress_data["is_page_selection"]
     return reader, selected_pages, chunk_ranges, progress_data
 
 

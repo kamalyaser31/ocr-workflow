@@ -111,6 +111,14 @@ def validate_tracked_part(part_num, chunk_map, progress_path, output_dir):
             file=sys.stderr,
         )
         return "skipped"
+    
+    # استثناء الأجزاء المكتملة مسبقاً إذا كان ملفها الناتج موجوداً
+    if part_info.get("status") == "completed" and part_info.get("output_file"):
+        output_path = os.path.join(os.path.dirname(progress_path), part_info["output_file"])
+        if os.path.exists(output_path):
+            print(f"[INFO] Part {part_num} already validated and saved as {part_info['output_file']}")
+            return "passed"
+
     temp_path = resolve_temp_path(part_num, output_dir)
     if not os.path.exists(temp_path):
         print(

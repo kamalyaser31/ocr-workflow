@@ -78,12 +78,17 @@ def cleanup_completed_run(
     for part_path in part_paths:
         part_path.unlink()
         print(f"Deleted Markdown part: {part_path.name}")
-    if progress_data.get("is_split", True):
-        for chunk in progress_data["chunks"]:
-            pdf_path = resolve_workspace_file(output_parts_dir, chunk["filename"])
-            if pdf_path.exists():
-                pdf_path.unlink()
-                print(f"Deleted PDF chunk: {pdf_path.name}")
+    for chunk in progress_data.get("chunks", []):
+        filename = chunk.get("filename")
+        if filename:
+            try:
+                pdf_path = resolve_workspace_file(output_parts_dir, filename)
+                # التأكد من أننا نحذف فقط الملفات الموجودة داخل مجلد الأجزاء ولا نطمس الملف الأصلي
+                if pdf_path.exists() and pdf_path.is_file() and pdf_path.name != os.path.basename(progress_data.get("source_file", "")):
+                    pdf_path.unlink()
+                    print(f"Deleted PDF chunk: {pdf_path.name}")
+            except (ValueError, OSError) as e:
+                print(f"Warning: Failed to clean up PDF chunk {filename}: {e}", file=sys.stderr)
     progress_path.unlink()
 
 

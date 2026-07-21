@@ -448,6 +448,114 @@ def test_pdf_to_images_rejects_unsafe_progress_output() -> None:
     in_temporary_project(scenario)
 
 
+def test_custom_page_range_single_chunk_cleanup() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        output_dir = project_dir / "output_parts"
+        create_pdf(pdf_path, 10)
+        
+        # 1. تقسيم صفحات مخصصة (مثلا 1-2)
+        split_pdf_module.split_pdf(str(pdf_path), str(output_dir), "1-2", pages_per_file=20)
+        progress_path = output_dir / "progress.json"
+        
+        assert progress_path.is_file()
+        progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+        
+        # تأكيد أن قيمة is_split هي True لحماية التنظيف
+        assert progress_data["is_split"] is True
+        assert len(progress_data["chunks"]) == 1
+        
+        # 2. توليد المحتوى المستخلص
+        part_1_temp = output_dir / "part_1_temp.md"
+        part_1_temp.write_text("--- Page 1 ---\nContent 1\n--- Page 2 ---\nContent 2", encoding="utf-8")
+        
+        # 3. التحقق
+        passed, failed, skipped = validate_chunk_module.run_validation([1], str(progress_path), str(output_dir))
+        assert passed == 1 and failed == 0 and skipped == 0
+        
+        # 4. الدمج
+        assert merge_parts_module.merge_parts(str(progress_path)) is True
+        
+        # 5. التحقق من مسح مجلد الأجزاء بالكامل ومحتوياته المؤقتة
+        assert not progress_path.exists()
+        assert not list(output_dir.glob("book_part_*.pdf"))
+        assert not list(output_dir.glob("part_*_output.md"))
+        
+    in_temporary_project(scenario)
+
+
+def test_validation_resume_all_completed_chunks() -> None:
+    def scenario(project_dir: Path) -> None:
+        progress_path = project_dir / "output_parts" / "progress.json"
+        progress_path.parent.mkdir(exist_ok=True)
+        
+        # إنشاء هيكل progress.json بجزئين: جزء 1 مكتمل مسبقاً، وجزء 2 قيد التحقق (له ملف temp)
+        chunks = [
+            {
+                "part": 1,
+                "filename": "book_part_1.pdf",
+                "start_page": 1,
+                "end_page": 1,
+                "status": "completed",
+                "output_file": "part_1_output.md"
+            },
+            {
+                "part": 2,
+                "filename": "book_part_2.pdf",
+                "start_page": 2,
+                "end_page": 2,
+                "status": "pending",
+                "output_file": ""
+            }
+        ]
+        write_progress(progress_path, chunks)
+        
+        # كتابة الملف الناتج للجزء 1 المكتمل
+        part_1_output = progress_path.parent / "part_1_output.md"
+        part_1_output.write_text("--- Page 1 ---\nContent 1", encoding="utf-8")
+        
+        # كتابة الملف المؤقت للجزء 2 الجاري
+        part_2_temp = progress_path.parent / "part_2_temp.md"
+        part_2_temp.write_text("--- Page 2 ---\nContent 2", encoding="utf-8")
+        
+        # تشغيل التحقق لكلا الجزأين (مماثل لـ --all)
+        passed, failed, skipped = validate_chunk_module.run_validation(
+            [1, 2], str(progress_path), str(progress_path.parent)
+        )
+        
+        # يجب أن ينجح التحقق للجزأين معاً: جزء 1 يعتبر passed تلقائياً، وجزء 2 يتم التحقق منه وينجح
+        assert passed == 2
+        assert failed == 0
+        assert skipped == 0
+        
+    in_temporary_project(scenario)
+
+
+def test_convert_to_docx_atomic_cleanup_on_failure() -> None:
+    def scenario(project_dir: Path) -> None:
+        md_path = project_dir / "input.md"
+        docx_path = project_dir / "output.docx"
+        md_path.write_text("Some content.", encoding="utf-8")
+        
+        # حفظ استدعاء Pandoc الأصلي لاستبداله مؤقتاً
+        original_find_pandoc = convert_to_docx_module.find_pandoc
+        
+        # محاكاة وجود Pandoc ولكنه يفشل
+        convert_to_docx_module.find_pandoc = lambda: "non_existent_pandoc_executable"
+        
+        try:
+            success = convert_to_docx_module.markdown_to_docx(str(md_path), str(docx_path))
+            assert success is False
+            # التأكد من خلو المسار من أي ملفات تالفة أو مؤقتة
+            assert not docx_path.exists()
+            assert not Path(str(docx_path) + ".tmp").exists()
+        finally:
+            # استعادة الاستدعاء الأصلي
+            convert_to_docx_module.find_pandoc = original_find_pandoc
+            
+    in_temporary_project(scenario)
+
+
 TESTS = [
     test_page_ranges_keep_only_document_intersection,
     test_invalid_selection_creates_no_workspace,
@@ -469,6 +577,9 @@ TESTS = [
     test_convert_to_docx_has_arabic,
     test_convert_to_docx_conversion,
     test_convert_to_docx_raises_on_overwrite,
+    test_custom_page_range_single_chunk_cleanup,
+    test_validation_resume_all_completed_chunks,
+    test_convert_to_docx_atomic_cleanup_on_failure,
 ]
 
 

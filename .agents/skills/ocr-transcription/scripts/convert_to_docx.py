@@ -82,7 +82,15 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
         )
         return False
 
-    pandoc_command = [pandoc_bin, md_path, "-o", docx_path]
+    # استخدام ملف مؤقت ذري
+    temp_docx_path = docx_path + ".tmp"
+    if os.path.exists(temp_docx_path):
+        try:
+            os.remove(temp_docx_path)
+        except OSError:
+            pass
+
+    pandoc_command = [pandoc_bin, md_path, "-o", temp_docx_path]
 
     if has_arabic(md_path):
         pandoc_command.extend(["-M", "dir=rtl"])
@@ -103,16 +111,31 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
             text=True,
         )
         if completed_process.returncode == 0:
-            print(f"Success: Converted '{md_path}' to '{docx_path}' " "using Pandoc.")
-            return True
+            if os.path.exists(temp_docx_path):
+                os.replace(temp_docx_path, docx_path)
+                print(f"Success: Converted '{md_path}' to '{docx_path}' using Pandoc.")
+                return True
+            else:
+                print("Error: Pandoc reported success but temp output file was not found.", file=sys.stderr)
+                return False
         else:
             print(
                 f"Pandoc error (Code {completed_process.returncode}): "
                 f"{completed_process.stderr}"
             )
+            if os.path.exists(temp_docx_path):
+                try:
+                    os.remove(temp_docx_path)
+                except OSError:
+                    pass
             return False
     except (OSError, FileNotFoundError) as error:
         print(f"Error executing Pandoc conversion: {error}", file=sys.stderr)
+        if os.path.exists(temp_docx_path):
+            try:
+                os.remove(temp_docx_path)
+            except OSError:
+                pass
         return False
 
 
