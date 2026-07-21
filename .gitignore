@@ -19,5 +19,6 @@ word/
 temp.zip
 test_arabic.docx
 
+output_images/
 run_tests.py
 REPORT.md

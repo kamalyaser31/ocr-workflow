@@ -57,6 +57,16 @@
 ٢. اطلب تفريغ الملف في الدردشة بذكر مساره ونطاق الصفحات إن رغبت (مثل: "فرغ صفحات 5-10 من ملف `pdf/input.pdf`").
 ٣. احصل على الملفات الجاهزة مباشرة من مجلدي `md/` و`word/` بعد انتهاء المعالجة التلقائية.
 
+### تحويل الصفحات إلى صور
+
+لتحضير كل صفحة صورة PNG مستقلة، من غير تشغيل OCR:
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"; python .agents/skills/ocr-transcription/scripts/pdf_to_images.py "pdf/input.pdf" --output-dir "output_images"
+```
+
+يستأنف السكربت العمل من `output_images/.progress.json`، ويرفض طمس مجلد مخرجات غير فارغ بلا سجل حالة.
+
 ### الاختبار المحلي
 
 شغّل الفحص السلوكي المستقل من جذر المشروع:
@@ -71,12 +81,15 @@ $env:PYTHONIOENCODING="utf-8"; python -B run_tests.py
 
 تعمل السكربتات الموجودة في مجلد المهارة ([.agents/skills/ocr-transcription/](.agents/skills/ocr-transcription/)) بالتتابع لتنفيذ المهمة:
 
-- **[splitt_pdf.py](.agents/skills/ocr-transcription/scripts/splitt_pdf.py)**: يحلل نطاق الصفحات ويجمعها متصلة ويقسمها إلى ملفات أجزاء خامة.
+- **[splitt_pdf.py](.agents/skills/ocr-transcription/scripts/splitt_pdf.py)**: يحلل نطاق الصفحات ويقسمها إلى أجزاء خامة، ويستورد أدوات التحليل من `_shared.py`.
+- **[pdf_to_images.py](.agents/skills/ocr-transcription/scripts/pdf_to_images.py)**: يحوّل صفحات PDF المحددة إلى صور PNG مستقلة قابلة للاستئناف عبر `PyMuPDF` ( Fitz ) وبدقة عالية.
+- **[_shared.py](.agents/skills/ocr-transcription/scripts/_shared.py)**: يحتوي على أدوات الإدخال والإخراج الموحدة ومحلل النطاقات المتسامح المشترك لمنع تكرار الشيفرات.
 - **[validate_chunk.py](.agents/skills/ocr-transcription/scripts/validate_chunk.py)**: يفحص مطابقة الصفحات المستخلصة وواصماتها للحدود المعينة في سجل المتابعة.
 - **[merge_parts.py](.agents/skills/ocr-transcription/scripts/merge_parts.py)**: يتحقق من اكتمال ملفات الأجزاء ويدمجها في ملف Markdown واحد بمجلد `md/`.
 - **[convert_to_docx.py](.agents/skills/ocr-transcription/scripts/convert_to_docx.py)**: يستدعي Pandoc ويحقن معاملات اتجاه اللغة لإنشاء مستند Word منسق بمجلد `word/`.
 - **[transcription_rules.md](.agents/skills/ocr-transcription/references/transcription_rules.md)**: يضبط ميثاق النسخ والتدقيق وتخريج التلف وقواعد مناقلة الملفات.
 - **[execution_rules.md](.agents/skills/ocr-transcription/references/execution_rules.md)**: يحدد قواعد تجميد العمل عند الخطأ البرمجي وإجراءات التعافي.
+- **[pdf_images_rules.md](.agents/skills/ocr-transcription/references/pdf_images_rules.md)**: يضبط القواعد والضوابط الخاصة بمسار تحويل صفحات PDF إلى صور مستقلة.
 - **[run_tests.py](run_tests.py)**: يفحص عزل التشغيل، ونطاقات الصفحات، وثبات الحالة، والدمج الآمن، ومنع اجتياز المسار والطمس.
 
 ---

@@ -14,6 +14,7 @@ disable-model-invocation: true
 - **المرجعيات التفصيلية**:
   - قواعد النسخ والأمانة العلمية وحظر المكتبات الخارجية: **[references/transcription_rules.md](references/transcription_rules.md)**
   - بروتوكولات الفشل والتعافي والتحقق الفردي: **[references/execution_rules.md](references/execution_rules.md)**
+  - قواعد بروتوكول تحويل صفحات PDF إلى صور: **[references/pdf_images_rules.md](references/pdf_images_rules.md)**
 
 ---
 
@@ -29,7 +30,11 @@ disable-model-invocation: true
 
 ---
 
-## ٢. بروتوكول التنفيذ التتابعي (Sequential Execution Pipeline)
+## ٢. المسار الاختياري: تحويل صفحات PDF إلى صور
+
+يُستعمل هذا المسار لرسم صفحات PDF إلى صور PNG مستقلة قبل البدء بسير معالجة OCR. وتخضع ضوابط استدعائه وتشغيله بالكامل للملف المرجعي: **[references/pdf_images_rules.md](references/pdf_images_rules.md)**.
+
+## ٣. بروتوكول التنفيذ التتابعي (Sequential Execution Pipeline)
 
 ### الخطوة صفر: حاجز نمط التخطيط (Plan Mode Guard)
 1. **فحص إلزامي قبل أي عمل**: يتحقق الوكيل الرئيسي من نمط الجلسة قبل تشغيل أي سكربت، أو إنشاء أي ملف، أو إطلاق أي وكيل فرعي.
@@ -51,7 +56,7 @@ disable-model-invocation: true
 
 ---
 
-## ٣. المسار السريع (Fast Track) - للملفات الصغيرة (<= 20 صفحة)
+## ٤. المسار السريع (Fast Track) - للملفات الصغيرة (<= 20 صفحة)
 
 1. **التجهيز والاستخلاص**:
    - في حال تحديد صفحات مخصصة، يجب تشغيل سكربت التقسيم أولاً لتجهيز نطاقات الصفحات الخام في مجلد الأجزاء:
@@ -70,7 +75,7 @@ disable-model-invocation: true
 
 ---
 
-## ٤. المسار القياسي المجزأ (Chunked Pipeline) - للملفات الكبيرة (> 20 صفحة)
+## ٥. المسار القياسي المجزأ (Chunked Pipeline) - للملفات الكبيرة (> 20 صفحة)
 
 ### الخطوة الأولى: التهيئة والتقسيم
 1. يتحقق الوكيل من خلو `output_parts/` قبل بدء تشغيل جديد. فإذا وجد ملف حالة أو جزءاً من تشغيل سابق، يتوقف ويحافظ عليه ليستأنفه المستخدم أو ينقله؛ ولا يطمسه بتشغيل جديد.

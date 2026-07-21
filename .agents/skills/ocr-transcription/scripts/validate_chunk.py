@@ -4,36 +4,13 @@ import re
 import sys
 import argparse
 import io
+from pathlib import Path
+
+# Ensure local scripts directory is in sys.path for importing _shared
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _shared import write_json_atomic, write_text_atomic  # noqa: E402
 
 PAGE_MARKER_PATTERN = re.compile(r"^--- Page ([0-9]+) ---\r?$", re.MULTILINE)
-
-
-def write_text_atomic(file_path: str, content: str) -> None:
-    """Replace a text file only after its complete contents are durable."""
-    temp_path = f"{file_path}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(content)
-            file_handle.flush()
-            os.fsync(file_handle.fileno())
-        os.replace(temp_path, file_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-def write_json_atomic(file_path: str, payload: dict) -> None:
-    """Replace progress state only after its complete contents are durable."""
-    temp_path = f"{file_path}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as file_handle:
-            json.dump(payload, file_handle, indent=4, ensure_ascii=False)
-            file_handle.flush()
-            os.fsync(file_handle.fileno())
-        os.replace(temp_path, file_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
 
 def _check_page_markers(output_text: str, start_page: int, end_page: int):
@@ -71,9 +48,7 @@ def save_failed_validation(
     progress_path, progress_data, part_info, marker_check
 ) -> None:
     """Persist a failed marker check and report its evidence."""
-    _, found_count, expected_count, found_numbers, expected_numbers = (
-        marker_check
-    )
+    _, found_count, expected_count, found_numbers, expected_numbers = marker_check
     find_progress_chunk(progress_data, part_info["part"])["status"] = "failed"
     write_json_atomic(progress_path, progress_data)
     print(
@@ -83,9 +58,7 @@ def save_failed_validation(
     print(f"Numbers found: {found_numbers} / Expected: {expected_numbers}")
 
 
-def save_validated_chunk(
-    output_text, part_info, progress_path, raw_file_path
-) -> None:
+def save_validated_chunk(output_text, part_info, progress_path, raw_file_path) -> None:
     """Commit validated output and state before removing the raw file."""
     with open(progress_path, "r", encoding="utf-8") as file_handle:
         progress_data = json.load(file_handle)
@@ -120,9 +93,7 @@ def validate_chunk(output_text, part_info, progress_path, output_file_path):
             marker_check,
         )
         return False
-    save_validated_chunk(
-        output_text, part_info, progress_path, output_file_path
-    )
+    save_validated_chunk(output_text, part_info, progress_path, output_file_path)
     return True
 
 

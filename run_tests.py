@@ -23,6 +23,8 @@ def load_script(module_name: str, filename: str):
 split_pdf_module = load_script("split_pdf_module", "splitt_pdf.py")
 validate_chunk_module = load_script("validate_chunk_module", "validate_chunk.py")
 merge_parts_module = load_script("merge_parts_module", "merge_parts.py")
+pdf_to_images_module = load_script("pdf_to_images_module", "pdf_to_images.py")
+convert_to_docx_module = load_script("convert_to_docx_module", "convert_to_docx.py")
 
 
 def assert_raises(expected_exception, operation):
@@ -147,6 +149,41 @@ def test_split_rejects_nonpositive_chunk_size() -> None:
                 str(pdf_path), str(project_dir / "output_parts"), None, 0
             ),
         )
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_to_images_renders_and_resumes() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        output_dir = project_dir / "output_images"
+        create_pdf(pdf_path, 3)
+        pdf_to_images_module.render_images(pdf_path, output_dir, [1, 2, 3], dpi=72)
+        image_paths = sorted(output_dir.glob("*.png"))
+        assert len(image_paths) == 3
+        first_bytes = [path.read_bytes() for path in image_paths]
+        progress = json.loads(
+            (output_dir / ".progress.json").read_text(encoding="utf-8")
+        )
+        assert all(
+            record["status"] == "completed" for record in progress["pages"].values()
+        )
+        pdf_to_images_module.render_images(pdf_path, output_dir, [1, 2, 3], dpi=72)
+        assert [path.read_bytes() for path in image_paths] == first_bytes
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_to_images_handles_tolerant_ranges() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        output_dir = project_dir / "output_images"
+        create_pdf(pdf_path, 5)
+        pages = pdf_to_images_module.parse_pages("1-10,bad,3", 5)
+        assert pages == [1, 2, 3, 4, 5]
+        pdf_to_images_module.render_images(pdf_path, output_dir, pages, dpi=72)
+        image_paths = sorted(output_dir.glob("*.png"))
+        assert len(image_paths) == 5
 
     in_temporary_project(scenario)
 
@@ -320,12 +357,106 @@ def test_merge_finalizes_complete_unique_run() -> None:
     in_temporary_project(scenario)
 
 
+def test_convert_to_docx_has_arabic() -> None:
+    def scenario(project_dir: Path) -> None:
+        arabic_md = project_dir / "arabic.md"
+        english_md = project_dir / "english.md"
+
+        arabic_md.write_text(
+            "﴿ ذَٰلِكَ الْكِتَابُ لَا رَيْبَ ۛ فِيهِ ﴾\nهذا كتاب مبارك.",
+            encoding="utf-8",
+        )
+        english_md.write_text(
+            "This is an English document with no RTL script.",
+            encoding="utf-8",
+        )
+
+        assert convert_to_docx_module.has_arabic(str(arabic_md)) is True
+        assert convert_to_docx_module.has_arabic(str(english_md)) is False
+        assert_raises(
+            FileNotFoundError,
+            lambda: convert_to_docx_module.has_arabic("non_existent_file.md"),
+        )
+
+    in_temporary_project(scenario)
+
+
+def test_convert_to_docx_conversion() -> None:
+    def scenario(project_dir: Path) -> None:
+        md_path = project_dir / "input.md"
+        docx_path = project_dir / "output.docx"
+        md_path.write_text("## Test Section\nSome content here.", encoding="utf-8")
+
+        pandoc_bin = convert_to_docx_module.find_pandoc()
+        if pandoc_bin is None:
+            success = convert_to_docx_module.markdown_to_docx(
+                str(md_path), str(docx_path)
+            )
+            assert success is False
+            assert not docx_path.exists()
+        else:
+            success = convert_to_docx_module.markdown_to_docx(
+                str(md_path), str(docx_path)
+            )
+            assert success is True
+            assert docx_path.is_file()
+
+    in_temporary_project(scenario)
+
+
+def test_convert_to_docx_raises_on_overwrite() -> None:
+    def scenario(project_dir: Path) -> None:
+        md_path = project_dir / "input.md"
+        docx_path = project_dir / "output.docx"
+        md_path.write_text("Some markdown content.", encoding="utf-8")
+        docx_path.write_text("Existing word file.", encoding="utf-8")
+
+        assert_raises(
+            FileExistsError,
+            lambda: convert_to_docx_module.markdown_to_docx(
+                str(md_path), str(docx_path)
+            ),
+        )
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_to_images_rejects_unsafe_progress_output() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        output_dir = project_dir / "output_images"
+        create_pdf(pdf_path, 1)
+
+        # 1. Run rendering to initialize workspace and progress state
+        pdf_to_images_module.render_images(pdf_path, output_dir, [1], dpi=72)
+
+        # 2. Modify state maliciously
+        progress_path = output_dir / ".progress.json"
+        state = json.loads(progress_path.read_text(encoding="utf-8"))
+        state["pages"]["1"]["output"] = "../malicious.png"
+        progress_path.write_text(json.dumps(state), encoding="utf-8")
+
+        # 3. Re-running rendering should raise ValueError
+        # due to path traversal detection.
+        assert_raises(
+            ValueError,
+            lambda: pdf_to_images_module.render_images(
+                pdf_path, output_dir, [1], dpi=72
+            ),
+        )
+
+    in_temporary_project(scenario)
+
+
 TESTS = [
     test_page_ranges_keep_only_document_intersection,
     test_invalid_selection_creates_no_workspace,
     test_split_refuses_stale_workspace,
     test_split_writes_canonical_selected_page_state,
     test_split_rejects_nonpositive_chunk_size,
+    test_pdf_to_images_renders_and_resumes,
+    test_pdf_to_images_handles_tolerant_ranges,
+    test_pdf_to_images_rejects_unsafe_progress_output,
     test_marker_validation_rejects_prefixed_content,
     test_validation_commits_state_before_removing_raw_file,
     test_validation_counts_missing_parts_as_skipped,
@@ -335,6 +466,9 @@ TESTS = [
     test_merge_preserves_existing_final_output,
     test_merge_allows_identical_page_contents,
     test_merge_finalizes_complete_unique_run,
+    test_convert_to_docx_has_arabic,
+    test_convert_to_docx_conversion,
+    test_convert_to_docx_raises_on_overwrite,
 ]
 
 

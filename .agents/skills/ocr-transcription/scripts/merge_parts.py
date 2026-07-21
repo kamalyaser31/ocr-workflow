@@ -4,19 +4,9 @@ import argparse
 import sys
 from pathlib import Path, PureWindowsPath
 
-
-def write_text_atomic(file_path: Path, content: str) -> None:
-    """Replace a text file only after its complete contents are durable."""
-    temp_path = file_path.with_name(f"{file_path.name}.tmp")
-    try:
-        with temp_path.open("w", encoding="utf-8") as file_handle:
-            file_handle.write(content)
-            file_handle.flush()
-            os.fsync(file_handle.fileno())
-        os.replace(temp_path, file_path)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+# Ensure local scripts directory is in sys.path for importing _shared
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _shared import write_text_atomic  # noqa: E402
 
 
 def resolve_workspace_file(directory: Path, filename: str) -> Path:
