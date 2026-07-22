@@ -59,7 +59,7 @@
 
 ### تحويل الصفحات إلى صور
 
-لتحضير كل صفحة صورة PNG مستقلة، من غير تشغيل OCR:
+لتحضير كل صفحة صورة PNG مستقلة، من غير تشغيل OCR (بالدقة القياسية **300 DPI** افتراضياً لضمان دقة الرسم):
 
 ```powershell
 $env:PYTHONIOENCODING="utf-8"; python .agents/skills/ocr-transcription/scripts/pdf_to_images.py "pdf/input.pdf" --output-dir "output_images"
@@ -82,7 +82,7 @@ $env:PYTHONIOENCODING="utf-8"; python -B run_tests.py
 تعمل السكربتات الموجودة في مجلد المهارة ([.agents/skills/ocr-transcription/](.agents/skills/ocr-transcription/)) بالتتابع لتنفيذ المهمة:
 
 - **[splitt_pdf.py](.agents/skills/ocr-transcription/scripts/splitt_pdf.py)**: يحلل نطاق الصفحات ويقسمها إلى أجزاء خامة، ويستورد أدوات التحليل من `_shared.py`.
-- **[pdf_to_images.py](.agents/skills/ocr-transcription/scripts/pdf_to_images.py)**: يحوّل صفحات PDF المحددة إلى صور PNG مستقلة قابلة للاستئناف عبر `PyMuPDF` ( Fitz ) وبدقة عالية.
+- **[pdf_to_images.py](.agents/skills/ocr-transcription/scripts/pdf_to_images.py)**: يحوّل صفحات PDF المحددة إلى صور PNG مستقلة قابلة للاستئناف عبر `PyMuPDF` (`fitz`) بالدقة القياسية **300 DPI** افتراضياً لضمان أعلى وضوح للخط العربي والتفاصيل.
 - **[_shared.py](.agents/skills/ocr-transcription/scripts/_shared.py)**: يحتوي على أدوات الإدخال والإخراج الموحدة ومحلل النطاقات المتسامح المشترك لمنع تكرار الشيفرات.
 - **[validate_chunk.py](.agents/skills/ocr-transcription/scripts/validate_chunk.py)**: يفحص مطابقة الصفحات المستخلصة وواصماتها للحدود المعينة في سجل المتابعة.
 - **[merge_parts.py](.agents/skills/ocr-transcription/scripts/merge_parts.py)**: يتحقق من اكتمال ملفات الأجزاء ويدمجها في ملف Markdown واحد بمجلد `md/`.

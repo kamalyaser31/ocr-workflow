@@ -10,7 +10,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _shared import write_json_atomic, parse_pages  # noqa: E402
 
-DEFAULT_DPI = 150
+DEFAULT_DPI = 300
 STATE_FILENAME = ".progress.json"
 
 
