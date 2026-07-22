@@ -75,20 +75,58 @@ def cleanup_completed_run(
 ) -> None:
     """Remove only verified intermediates belonging to the completed run."""
     output_parts_dir = progress_path.parent
+    project_root = output_parts_dir.parent
     for part_path in part_paths:
         part_path.unlink()
         print(f"Deleted Markdown part: {part_path.name}")
-    for chunk in progress_data.get("chunks", []):
-        filename = chunk.get("filename")
-        if filename:
+
+    pipeline = progress_data.get("pipeline", "pdf")
+
+    if pipeline == "images":
+        images_dir = (project_root / "output_images").resolve()
+        source_stem = Path(progress_data.get("source_file", "")).stem
+        if images_dir.is_dir():
+            for chunk in progress_data.get("chunks", []):
+                part_num = chunk.get("part", 1)
+                chunk_dir = images_dir / f"chunk_{part_num}"
+                start_page = chunk.get("start_page", 1)
+                end_page = chunk.get("end_page", start_page)
+
+                for page_num in range(start_page, end_page + 1):
+                    img_name = f"{source_stem}_p{page_num:03d}.png"
+                    img_path = chunk_dir / img_name
+                    if img_path.is_file():
+                        img_path.unlink()
+                        print(f"Deleted image: chunk_{part_num}/{img_name}")
+                    else:
+                        img_path_direct = images_dir / img_name
+                        if img_path_direct.is_file():
+                            img_path_direct.unlink()
+                            print(f"Deleted image: {img_name}")
+
+                if chunk_dir.is_dir():
+                    try:
+                        chunk_dir.rmdir()
+                        print(f"Removed chunk directory: chunk_{part_num}")
+                    except OSError:
+                        pass
             try:
-                pdf_path = resolve_workspace_file(output_parts_dir, filename)
-                # التأكد من أننا نحذف فقط الملفات الموجودة داخل مجلد الأجزاء ولا نطمس الملف الأصلي
-                if pdf_path.exists() and pdf_path.is_file() and pdf_path.name != os.path.basename(progress_data.get("source_file", "")):
-                    pdf_path.unlink()
-                    print(f"Deleted PDF chunk: {pdf_path.name}")
-            except (ValueError, OSError) as e:
-                print(f"Warning: Failed to clean up PDF chunk {filename}: {e}", file=sys.stderr)
+                images_dir.rmdir()
+                print("Removed directory: output_images")
+            except OSError:
+                pass
+    else:
+        for chunk in progress_data.get("chunks", []):
+            filename = chunk.get("filename")
+            if filename:
+                try:
+                    pdf_path = resolve_workspace_file(output_parts_dir, filename)
+                    if pdf_path.exists() and pdf_path.is_file() and pdf_path.name != os.path.basename(progress_data.get("source_file", "")):
+                        pdf_path.unlink()
+                        print(f"Deleted PDF chunk: {pdf_path.name}")
+                except (ValueError, OSError) as e:
+                    print(f"Warning: Failed to clean up PDF chunk {filename}: {e}", file=sys.stderr)
+
     progress_path.unlink()
 
 

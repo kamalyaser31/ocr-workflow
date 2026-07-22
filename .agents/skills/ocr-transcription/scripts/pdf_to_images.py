@@ -8,10 +8,15 @@ from PIL import Image
 
 # Ensure local scripts directory is in sys.path for importing _shared
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _shared import write_json_atomic, parse_pages  # noqa: E402
+from _shared import (  # noqa: E402
+    write_json_atomic,
+    parse_pages,
+    make_windows_safe_suffix,
+    build_chunk_ranges,
+    new_chunk,
+)
 
 DEFAULT_DPI = 300
-STATE_FILENAME = ".progress.json"
 
 
 def validate_pdf(input_pdf: Path):
@@ -37,64 +42,6 @@ def image_name(source_stem: str, page_number: int) -> str:
     return f"{source_stem}_p{page_number:03d}.png"
 
 
-def prepare_output_dir(output_dir: Path) -> Path:
-    """Create a workspace or refuse unrelated existing files."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    state_path = output_dir / STATE_FILENAME
-    if not any(output_dir.iterdir()):
-        return state_path
-    if not state_path.is_file():
-        raise RuntimeError(
-            f"Output directory is not empty and has no {STATE_FILENAME}: "
-            f"{output_dir}"
-        )
-    return state_path
-
-
-def make_state(input_pdf: Path, pages: list[int], dpi: int) -> dict:
-    """Create a resumable state document."""
-    resolved_pdf = input_pdf.resolve()
-    return {
-        "source_file": str(resolved_pdf),
-        "source_name": resolved_pdf.stem,
-        "dpi": dpi,
-        "pages": {
-            str(page): {
-                "status": "pending",
-                "output": image_name(resolved_pdf.stem, page),
-            }
-            for page in pages
-        },
-    }
-
-
-def load_or_create_state(
-    state_path: Path, input_pdf: Path, pages: list[int], dpi: int
-) -> dict:
-    """Load a compatible state or create a new one."""
-    resolved_pdf = input_pdf.resolve()
-    if not state_path.exists():
-        state = make_state(resolved_pdf, pages, dpi)
-        write_json_atomic(state_path, state)
-        return state
-
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"Invalid progress file '{state_path}': {error}") from error
-
-    if (
-        Path(state.get("source_file", "")).resolve() != resolved_pdf
-        or state.get("dpi") != dpi
-        or sorted(int(page) for page in state.get("pages", {})) != pages
-    ):
-        raise RuntimeError(
-            "Existing progress state belongs to a different PDF, DPI, or "
-            "page selection."
-        )
-    return state
-
-
 def valid_existing_image(path: Path) -> bool:
     """Check that an existing output is a readable nonempty PNG."""
     try:
@@ -117,58 +64,109 @@ def render_page(document, page_number: int, output_path: Path, dpi: int) -> None
         pix = None  # Release memory buffer explicitly
 
 
+def get_page_chunk_dir(
+    output_dir: Path, page_number: int, chunk_ranges: list[tuple[int, int]]
+) -> tuple[int, Path]:
+    """Determine chunk part number and directory for a given page number."""
+    for part_number, (start_p, end_p) in enumerate(chunk_ranges, start=1):
+        if start_p <= page_number <= end_p:
+            return part_number, output_dir / f"chunk_{part_number}"
+    return 1, output_dir / "chunk_1"
+
+
+def create_or_load_progress(
+    progress_file: Path,
+    input_pdf: Path,
+    total_pages: int,
+    pages: list[int],
+    pages_str: str | None,
+    pages_per_file: int,
+    dpi: int,
+) -> dict:
+    """Create a unified progress state in output_parts/progress.json or load existing."""
+    resolved_pdf = input_pdf.resolve()
+    base_name = resolved_pdf.stem
+    suffix = make_windows_safe_suffix(pages) if pages_str else ""
+    final_filename = f"{base_name}{suffix}.md"
+    chunk_ranges = build_chunk_ranges(pages, pages_per_file)
+
+    if progress_file.exists():
+        try:
+            state = json.loads(progress_file.read_text(encoding="utf-8"))
+            if (
+                Path(state.get("source_file", "")).resolve() == resolved_pdf
+                and state.get("pipeline") == "images"
+            ):
+                return state
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    chunks = []
+    for part_number, (start_p, end_p) in enumerate(chunk_ranges, start=1):
+        first_img = f"chunk_{part_number}/{image_name(base_name, start_p)}"
+        chunks.append(new_chunk(part_number, first_img, start_p, end_p))
+
+    progress_data = {
+        "source_file": str(resolved_pdf),
+        "final_filename": final_filename,
+        "pipeline": "images",
+        "dpi": dpi,
+        "total_pages": total_pages,
+        "total_selected_pages": len(pages),
+        "is_page_selection": bool(pages_str),
+        "is_split": len(chunk_ranges) > 1 or bool(pages_str),
+        "chunks": chunks,
+    }
+    write_json_atomic(progress_file, progress_data)
+    return progress_data
+
+
 def render_images(
-    input_pdf: Path, output_dir: Path, pages: list[int], dpi: int
+    input_pdf: Path,
+    output_dir: Path,
+    parts_dir: Path,
+    pages: list[int],
+    pages_str: str | None,
+    pages_per_file: int,
+    dpi: int,
 ) -> None:
-    """Render all pending pages and update state after each successful page."""
+    """Render all selected pages into PNGs organized by chunk subdirectories."""
     resolved_pdf = input_pdf.resolve()
     resolved_dir = output_dir.resolve()
-    state_path = prepare_output_dir(resolved_dir)
-    state = load_or_create_state(state_path, resolved_pdf, pages, dpi)
-    document, _ = validate_pdf(resolved_pdf)
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    progress_file = parts_dir / "progress.json"
+    document, total_pages = validate_pdf(resolved_pdf)
+
     try:
+        progress_data = create_or_load_progress(
+            progress_file,
+            resolved_pdf,
+            total_pages,
+            pages,
+            pages_str,
+            pages_per_file,
+            dpi,
+        )
+        chunk_ranges = build_chunk_ranges(pages, pages_per_file)
+
         for idx, page_number in enumerate(pages, start=1):
-            record = state["pages"].get(str(page_number))
-            if not record:
-                raise RuntimeError(f"Page {page_number} not found in progress state.")
-
-            status = record.get("status")
-            if status not in ("pending", "completed"):
-                raise ValueError(
-                    f"Invalid status '{status}' for page {page_number} in state."
-                )
-
-            output_value = record.get("output")
-            if output_value:
-                resolved_output = (resolved_dir / output_value).resolve()
-                try:
-                    resolved_output.relative_to(resolved_dir)
-                except ValueError:
-                    raise ValueError(
-                        f"Target path traversal detected in state file: {output_value}"
-                    )
+            part_number, chunk_dir = get_page_chunk_dir(
+                resolved_dir, page_number, chunk_ranges
+            )
+            chunk_dir.mkdir(parents=True, exist_ok=True)
 
             expected_name = image_name(resolved_pdf.stem, page_number)
-            output_path = (resolved_dir / expected_name).resolve()
-            try:
-                output_path.relative_to(resolved_dir)
-            except ValueError:
-                raise ValueError(
-                    f"Target path traversal detected for page "
-                    f"{page_number}: {output_path}"
-                )
+            output_path = (chunk_dir / expected_name).resolve()
 
-            record["output"] = expected_name
-
-            if status == "completed" and valid_existing_image(output_path):
+            if valid_existing_image(output_path):
                 continue
-            if output_path.exists() and not valid_existing_image(output_path):
+            if output_path.exists():
                 output_path.unlink()
             render_page(document, page_number, output_path, dpi)
             if not valid_existing_image(output_path):
                 raise RuntimeError(f"Rendered image failed validation: {output_path}")
-            record["status"] = "completed"
-            write_json_atomic(state_path, state)
             print(f"[{idx}/{len(pages)}] Created: {output_path}")
     finally:
         document.close()
@@ -183,17 +181,29 @@ def main() -> int:
         "--output-dir",
         type=Path,
         default=Path("output_images"),
-        help="Output directory.",
+        help="Output directory for images.",
+    )
+    parser.add_argument(
+        "--parts-dir",
+        type=Path,
+        default=Path("output_parts"),
+        help="Output directory for progress tracking (default: output_parts).",
     )
     parser.add_argument(
         "--pages",
         help="1-based pages, for example: 1-3,8. Defaults to all pages.",
     )
     parser.add_argument(
+        "--pages_per_file",
+        type=int,
+        default=20,
+        help="Pages per chunk (default: 20).",
+    )
+    parser.add_argument(
         "--dpi",
         type=int,
         default=DEFAULT_DPI,
-        help="Rendering resolution (default: 150).",
+        help="Rendering resolution (default: 300).",
     )
     parser.add_argument(
         "--info-only", action="store_true", help="Print page count and exit."
@@ -203,6 +213,7 @@ def main() -> int:
     try:
         resolved_pdf = args.input_pdf.resolve()
         resolved_dir = args.output_dir.resolve()
+        parts_dir = args.parts_dir.resolve()
 
         document, total_pages = validate_pdf(resolved_pdf)
         document.close()
@@ -220,8 +231,17 @@ def main() -> int:
         if args.dpi < 1:
             raise ValueError("DPI must be at least 1.")
 
-        render_images(resolved_pdf, resolved_dir, pages, args.dpi)
+        render_images(
+            resolved_pdf,
+            resolved_dir,
+            parts_dir,
+            pages,
+            args.pages,
+            args.pages_per_file,
+            args.dpi,
+        )
         print(f"Completed: {len(pages)} image(s) in {resolved_dir}")
+        print(f"Workflow tracking file initialized at: {parts_dir / 'progress.json'}")
         return 0
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)

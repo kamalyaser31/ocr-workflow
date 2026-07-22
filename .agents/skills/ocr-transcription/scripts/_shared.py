@@ -104,3 +104,65 @@ def parse_pages(pages_str: str | None, total_pages: int) -> list[int]:
         else:
             selected_pages.update(parse_page_number(page_token, total_pages))
     return sorted(selected_pages)
+
+
+def group_contiguous(pages: list) -> list:
+    """
+    Groups sorted unique page numbers into (start, end) tuples.
+    For example: [5, 8, 10, 11, 12] -> [(5, 5), (8, 8), (10, 12)]
+    """
+    if not pages:
+        return []
+
+    ranges = []
+    start = pages[0]
+    prev = pages[0]
+
+    for page in pages[1:]:
+        if page == prev + 1:
+            prev = page
+        else:
+            ranges.append((start, prev))
+            start = page
+            prev = page
+
+    ranges.append((start, prev))
+    return ranges
+
+
+def make_windows_safe_suffix(selected_pages: list) -> str:
+    """Build a canonical suffix from validated page numbers."""
+    if not selected_pages:
+        return ""
+    range_labels = []
+    for start_page, end_page in group_contiguous(selected_pages):
+        if start_page == end_page:
+            range_labels.append(str(start_page))
+        else:
+            range_labels.append(f"{start_page}-{end_page}")
+    return f"_p{'_'.join(range_labels)}"
+
+
+def build_chunk_ranges(selected_pages: list, pages_per_file: int) -> list:
+    """Split contiguous selections into bounded chunk ranges."""
+    chunk_ranges = []
+    for range_start, range_end in group_contiguous(selected_pages):
+        chunk_start = range_start
+        while chunk_start <= range_end:
+            chunk_end = min(chunk_start + pages_per_file - 1, range_end)
+            chunk_ranges.append((chunk_start, chunk_end))
+            chunk_start = chunk_end + 1
+    return chunk_ranges
+
+
+def new_chunk(part, filename, start_page, end_page) -> dict:
+    """Create one pending progress record."""
+    return {
+        "part": part,
+        "filename": filename,
+        "start_page": start_page,
+        "end_page": end_page,
+        "status": "pending",
+        "output_file": "",
+    }
+
