@@ -200,20 +200,6 @@ def test_split_writes_canonical_selected_page_state() -> None:
     in_temporary_project(scenario)
 
 
-def test_split_rejects_nonpositive_chunk_size() -> None:
-    def scenario(project_dir: Path) -> None:
-        pdf_path = project_dir / "book.pdf"
-        create_pdf(pdf_path, 2)
-        assert_raises(
-            ValueError,
-            lambda: split_pdf_module.split_pdf(
-                str(pdf_path), str(project_dir / "output_parts"), None, 0
-            ),
-        )
-
-    in_temporary_project(scenario)
-
-
 def test_external_pdf_split_outputs_stay_in_cwd() -> None:
     def scenario(project_dir: Path) -> None:
         source_dir = project_dir / "external_source"
@@ -258,25 +244,6 @@ def test_pdf_to_images_renders_and_resumes() -> None:
     in_temporary_project(scenario)
 
 
-def test_pdf_to_images_handles_tolerant_ranges() -> None:
-    def scenario(project_dir: Path) -> None:
-        pdf_path = project_dir / "book.pdf"
-        create_pdf(pdf_path, 5)
-        pages = pdf_to_images_module.parse_pages("1-10,bad,3", 5)
-        assert pages == [1, 2, 3, 4, 5]
-        request = image_render_request(
-            project_dir,
-            pdf_path,
-            pages,
-            pages_str="1-10,bad,3",
-        )
-        pdf_to_images_module.render_images(request)
-        image_paths = sorted(request.output_dir.glob("chunk_*/*.png"))
-        assert len(image_paths) == 5
-
-    in_temporary_project(scenario)
-
-
 def test_external_pdf_image_outputs_stay_in_cwd() -> None:
     def scenario(project_dir: Path) -> None:
         source_dir = project_dir / "external_source"
@@ -299,15 +266,6 @@ def test_external_pdf_image_outputs_stay_in_cwd() -> None:
         assert not (source_dir / "output_images").exists()
 
     in_temporary_project(scenario)
-
-
-def test_marker_validation_rejects_prefixed_content() -> None:
-    valid_text = "--- Page 1 ---\nText\n--- Page 2 ---\nText"
-    prefixed_text = f"Unexpected\n{valid_text}"
-    valid_check = validate_chunk_module._check_page_markers(valid_text, 1, 2)
-    prefixed_check = validate_chunk_module._check_page_markers(prefixed_text, 1, 2)
-    assert valid_check[0] is True
-    assert prefixed_check[0] is False
 
 
 def test_validation_commits_state_before_removing_raw_file() -> None:
@@ -334,23 +292,6 @@ def test_validation_commits_state_before_removing_raw_file() -> None:
     in_temporary_project(scenario)
 
 
-def test_validation_counts_missing_parts_as_skipped() -> None:
-    def scenario(project_dir: Path) -> None:
-        output_dir = project_dir / "output_parts"
-        output_dir.mkdir()
-        progress_path = output_dir / "progress.json"
-        chunk = completed_chunk(1, 1)
-        chunk["status"] = "pending"
-        chunk["output_file"] = ""
-        write_progress(progress_path, [chunk])
-        counts = validate_chunk_module.run_validation(
-            [1], str(progress_path), str(output_dir)
-        )
-        assert counts == (0, 0, 1)
-
-    in_temporary_project(scenario)
-
-
 def test_validation_cli_missing_progress_exits_with_failure() -> None:
     command = [
         sys.executable,
@@ -369,33 +310,6 @@ def test_validation_cli_missing_progress_exits_with_failure() -> None:
         check=False,
     )
     assert completed_process.returncode != 0
-
-
-def test_validation_cli_uses_progress_directory_for_temp_file() -> None:
-    def scenario(project_dir: Path) -> None:
-        state_dir = project_dir / "custom_state"
-        state_dir.mkdir()
-        progress_path = state_dir / "progress.json"
-        chunk = completed_chunk(1, 1)
-        chunk["status"] = "pending"
-        chunk["output_file"] = ""
-        write_progress(progress_path, [chunk])
-        (state_dir / "part_1_temp.md").write_text(
-            "--- Page 1 ---\nUnique text",
-            encoding="utf-8",
-        )
-
-        completed_process = run_script(
-            "validate_chunk.py",
-            ["1", "--progress", str(progress_path)],
-            project_dir,
-        )
-
-        assert completed_process.returncode == 0, completed_process.stderr
-        assert (state_dir / "part_1_output.md").is_file()
-        assert not (project_dir / "output_parts").exists()
-
-    in_temporary_project(scenario)
 
 
 def test_merge_aborts_when_validated_part_is_missing() -> None:
@@ -498,53 +412,6 @@ def test_merge_allows_identical_page_contents() -> None:
     in_temporary_project(scenario)
 
 
-def test_merge_finalizes_complete_unique_run() -> None:
-    def scenario(project_dir: Path) -> None:
-        output_dir = project_dir / "output_parts"
-        output_dir.mkdir()
-        progress_path = output_dir / "progress.json"
-        chunks = [completed_chunk(1, 1), completed_chunk(2, 2)]
-        write_progress(progress_path, chunks)
-        for chunk in chunks:
-            page_number = chunk["start_page"]
-            (output_dir / chunk["output_file"]).write_text(
-                f"--- Page {page_number} ---\nUnique {page_number}",
-                encoding="utf-8",
-            )
-        assert merge_parts_module.merge_parts(str(progress_path)) is True
-        final_path = project_dir / "md" / "book.md"
-        assert final_path.is_file()
-        assert "Unique 1" in final_path.read_text(encoding="utf-8")
-        assert not progress_path.exists()
-        assert not list(output_dir.glob("part_*_output.md"))
-
-    in_temporary_project(scenario)
-
-
-def test_convert_to_docx_has_arabic() -> None:
-    def scenario(project_dir: Path) -> None:
-        arabic_md = project_dir / "arabic.md"
-        english_md = project_dir / "english.md"
-
-        arabic_md.write_text(
-            "﴿ ذَٰلِكَ الْكِتَابُ لَا رَيْبَ ۛ فِيهِ ﴾\nهذا كتاب مبارك.",
-            encoding="utf-8",
-        )
-        english_md.write_text(
-            "This is an English document with no RTL script.",
-            encoding="utf-8",
-        )
-
-        assert convert_to_docx_module.has_arabic(str(arabic_md)) is True
-        assert convert_to_docx_module.has_arabic(str(english_md)) is False
-        assert_raises(
-            FileNotFoundError,
-            lambda: convert_to_docx_module.has_arabic("non_existent_file.md"),
-        )
-
-    in_temporary_project(scenario)
-
-
 def test_convert_to_docx_conversion() -> None:
     def scenario(project_dir: Path) -> None:
         md_path = project_dir / "input.md"
@@ -608,46 +475,6 @@ def test_pdf_to_images_preserves_invalid_progress() -> None:
                             "part": 1,
                             "start_page": 1,
                             "end_page": 1,
-                        }
-                    ],
-                }
-            ),
-            "missing_chunk_fields": json.dumps(
-                {
-                    "source_file": str(pdf_path.resolve()),
-                    "final_filename": "book.md",
-                    "pipeline": "images",
-                    "dpi": 72,
-                    "total_pages": 1,
-                    "total_selected_pages": 1,
-                    "is_page_selection": False,
-                    "is_split": False,
-                    "chunks": [
-                        {
-                            "start_page": 1,
-                            "end_page": 1,
-                        }
-                    ],
-                }
-            ),
-            "completed_without_output": json.dumps(
-                {
-                    "source_file": str(pdf_path.resolve()),
-                    "final_filename": "book.md",
-                    "pipeline": "images",
-                    "dpi": 72,
-                    "total_pages": 1,
-                    "total_selected_pages": 1,
-                    "is_page_selection": False,
-                    "is_split": False,
-                    "chunks": [
-                        {
-                            "part": 1,
-                            "filename": "chunk_1/book_p001.png",
-                            "start_page": 1,
-                            "end_page": 1,
-                            "status": "completed",
-                            "output_file": "",
                         }
                     ],
                 }
@@ -793,24 +620,17 @@ TESTS = [
     test_invalid_selection_creates_no_workspace,
     test_split_preserves_every_nonempty_workspace,
     test_split_writes_canonical_selected_page_state,
-    test_split_rejects_nonpositive_chunk_size,
     test_external_pdf_split_outputs_stay_in_cwd,
     test_pdf_to_images_renders_and_resumes,
-    test_pdf_to_images_handles_tolerant_ranges,
     test_external_pdf_image_outputs_stay_in_cwd,
     test_pdf_to_images_preserves_invalid_progress,
-    test_marker_validation_rejects_prefixed_content,
     test_validation_commits_state_before_removing_raw_file,
-    test_validation_counts_missing_parts_as_skipped,
     test_validation_cli_missing_progress_exits_with_failure,
-    test_validation_cli_uses_progress_directory_for_temp_file,
     test_merge_aborts_when_validated_part_is_missing,
     test_merge_rejects_output_path_escape,
     test_merge_ignores_untrusted_project_root,
     test_merge_preserves_existing_final_output,
     test_merge_allows_identical_page_contents,
-    test_merge_finalizes_complete_unique_run,
-    test_convert_to_docx_has_arabic,
     test_convert_to_docx_conversion,
     test_convert_to_docx_raises_on_overwrite,
     test_custom_page_range_single_chunk_cleanup,

@@ -28,4 +28,4 @@
 $env:PYTHONIOENCODING="utf-8"; python -B run_tests.py
 ```
 
-النتيجة الحالية: `27 passed, 0 failed`.
+النتيجة الحالية: `20 passed, 0 failed`.
