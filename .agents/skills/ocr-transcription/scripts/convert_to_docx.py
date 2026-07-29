@@ -1,7 +1,8 @@
 import os
-import sys
-import subprocess
 import shutil
+import subprocess
+import sys
+import tempfile
 
 
 def find_pandoc():
@@ -82,22 +83,33 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
         )
         return False
 
-    # استخدام ملف مؤقت ذري
-    temp_docx_path = docx_path + ".tmp"
-    if os.path.exists(temp_docx_path):
-        try:
-            os.remove(temp_docx_path)
-        except OSError:
-            pass
+    contains_arabic = has_arabic(md_path)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    reference_doc_path = os.path.join(script_dir, "reference.docx")
 
-    pandoc_command = [pandoc_bin, md_path, "-o", temp_docx_path]
+    output_filename = os.path.splitext(os.path.basename(docx_path))[0]
+    temporary_file = tempfile.NamedTemporaryFile(
+        prefix=f".{output_filename}.",
+        suffix=".tmp.docx",
+        dir=output_dir or ".",
+        delete=False,
+    )
+    temp_docx_path = temporary_file.name
+    temporary_file.close()
 
-    if has_arabic(md_path):
+    pandoc_command = [
+        pandoc_bin,
+        md_path,
+        "-o",
+        temp_docx_path,
+        "-f",
+        "markdown-yaml_metadata_block",
+    ]
+
+    if contains_arabic:
         pandoc_command.extend(["-M", "dir=rtl"])
         print("Arabic text detected. Enabled Right-to-Left (RTL) formatting.")
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    reference_doc_path = os.path.join(script_dir, "reference.docx")
     if os.path.exists(reference_doc_path):
         pandoc_command.extend(["--reference-doc", reference_doc_path])
         print(f"Using reference document for styling: {reference_doc_path}")
@@ -110,33 +122,33 @@ def markdown_to_docx(md_path: str, docx_path: str) -> bool:
             stderr=subprocess.PIPE,
             text=True,
         )
-        if completed_process.returncode == 0:
-            if os.path.exists(temp_docx_path):
-                os.replace(temp_docx_path, docx_path)
-                print(f"Success: Converted '{md_path}' to '{docx_path}' using Pandoc.")
-                return True
-            else:
-                print("Error: Pandoc reported success but temp output file was not found.", file=sys.stderr)
-                return False
-        else:
+        if completed_process.returncode != 0:
             print(
                 f"Pandoc error (Code {completed_process.returncode}): "
                 f"{completed_process.stderr}"
             )
-            if os.path.exists(temp_docx_path):
-                try:
-                    os.remove(temp_docx_path)
-                except OSError:
-                    pass
             return False
-    except (OSError, FileNotFoundError) as error:
+        if not os.path.exists(temp_docx_path):
+            print(
+                "Error: Pandoc reported success but temp output file was not found.",
+                file=sys.stderr,
+            )
+            return False
+        os.replace(temp_docx_path, docx_path)
+        print(f"Success: Converted '{md_path}' to '{docx_path}' using Pandoc.")
+        return True
+    except OSError as error:
         print(f"Error executing Pandoc conversion: {error}", file=sys.stderr)
+        return False
+    finally:
         if os.path.exists(temp_docx_path):
             try:
                 os.remove(temp_docx_path)
-            except OSError:
-                pass
-        return False
+            except OSError as cleanup_error:
+                print(
+                    f"Warning: Failed to remove temporary DOCX: {cleanup_error}",
+                    file=sys.stderr,
+                )
 
 
 if __name__ == "__main__":

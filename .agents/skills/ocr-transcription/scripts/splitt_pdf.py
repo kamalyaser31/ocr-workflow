@@ -1,32 +1,30 @@
-import os
 import argparse
+import os
 import sys
 from pathlib import Path
+
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 
 # Ensure local scripts directory is in sys.path for importing _shared
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _shared import (
+from _shared import (  # noqa: E402
     write_json_atomic,
     parse_pages,
-    group_contiguous,
     make_windows_safe_suffix,
     build_chunk_ranges,
     new_chunk,
-)  # noqa: E402
+)
 
 
-def prepare_output_dir(output_dir: str) -> None:
-    """Create an empty workspace or refuse to overwrite an earlier run."""
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        return
-    if any(os.scandir(output_dir)):
+def prepare_output_dir(output_dir: Path) -> None:
+    """Create an empty workspace or preserve every earlier run."""
+    if output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(
-            f"Output directory '{output_dir}' is not empty. Preserve or "
-            "resume that run first."
+            f"Output directory '{output_dir}' is not empty. "
+            "Preserve or resume that run first."
         )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def safe_load_pdf(input_pdf_path: str):
@@ -57,9 +55,6 @@ def get_pdf_info(input_pdf_path: str):
     """Returns the total number of pages in the PDF."""
     _, total_pages = safe_load_pdf(input_pdf_path)
     return total_pages
-
-
-
 
 
 def write_chunk_pdf(reader, page_range, output_path: str) -> None:
@@ -110,7 +105,7 @@ def build_progress_data(
 ) -> dict:
     """Create workflow state before chunk records are appended."""
     return {
-        "source_file": input_pdf_path,
+        "source_file": str(Path(input_pdf_path).resolve()),
         "final_filename": final_filename,
         "pipeline": "pdf",
         "total_pages": total_pages,
@@ -139,13 +134,13 @@ def prepare_split_state(input_pdf_path, pages_str, pages_per_file):
         selected_pages,
     )
     progress_data["is_page_selection"] = bool(pages_str)
-    progress_data["is_split"] = len(chunk_ranges) > 1 or progress_data["is_page_selection"]
+    progress_data["is_split"] = len(chunk_ranges) > 1 or bool(pages_str)
     return reader, selected_pages, chunk_ranges, progress_data
 
 
 def split_pdf(
     input_pdf_path: str,
-    output_dir: str,
+    output_dir: str | None = None,
     pages_str: str = None,
     pages_per_file: int = 20,
 ) -> None:
@@ -155,17 +150,19 @@ def split_pdf(
     reader, selected_pages, chunk_ranges, progress_data = prepare_split_state(
         input_pdf_path, pages_str, pages_per_file
     )
-    prepare_output_dir(output_dir)
+
+    output_path = Path(output_dir or "output_parts").resolve()
+    prepare_output_dir(output_path)
     print(f"Total PDF pages: {progress_data['total_pages']}")
     if pages_str:
         print(f"Selected pages count: {len(selected_pages)} " f"(pages: {pages_str})")
 
     initialize_chunks_state(reader, progress_data, chunk_ranges)
 
-    progress_path = os.path.join(output_dir, "progress.json")
+    progress_path = output_path / "progress.json"
     write_json_atomic(progress_path, progress_data)
 
-    write_chunk_pdfs_from_state(reader, output_dir, progress_data)
+    write_chunk_pdfs_from_state(reader, str(output_path), progress_data)
 
     print(f"\nWorkflow Initialized: {progress_path} created.")
 
@@ -199,7 +196,7 @@ if __name__ == "__main__":
             else:
                 print(f"Total pages: {total}")
         else:
-            split_pdf(args.input_pdf, "output_parts", args.pages, args.pages_per_file)
-    except (FileNotFoundError, ValueError, RuntimeError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+            split_pdf(args.input_pdf, None, args.pages, args.pages_per_file)
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)

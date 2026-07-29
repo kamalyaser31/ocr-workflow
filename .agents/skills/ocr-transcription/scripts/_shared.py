@@ -165,4 +165,3 @@ def new_chunk(part, filename, start_page, end_page) -> dict:
         "status": "pending",
         "output_file": "",
     }
-

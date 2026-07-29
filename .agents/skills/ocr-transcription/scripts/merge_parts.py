@@ -121,11 +121,16 @@ def cleanup_completed_run(
             if filename:
                 try:
                     pdf_path = resolve_workspace_file(output_parts_dir, filename)
-                    if pdf_path.exists() and pdf_path.is_file() and pdf_path.name != os.path.basename(progress_data.get("source_file", "")):
+                    source_name = os.path.basename(progress_data.get("source_file", ""))
+                    if pdf_path.is_file() and pdf_path.name != source_name:
                         pdf_path.unlink()
                         print(f"Deleted PDF chunk: {pdf_path.name}")
-                except (ValueError, OSError) as e:
-                    print(f"Warning: Failed to clean up PDF chunk {filename}: {e}", file=sys.stderr)
+                except (ValueError, OSError) as error:
+                    print(
+                        f"Warning: Failed to clean up PDF chunk {filename}: "
+                        f"{error}",
+                        file=sys.stderr,
+                    )
 
     progress_path.unlink()
 
