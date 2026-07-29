@@ -5,7 +5,6 @@ description: >
   Use this skill ALWAYS when the user requests text extraction, OCR, transcription,
   book processing, or document conversion from PDF files, even if they don't
   explicitly name this skill.
-disable-model-invocation: true
 ---
 
 # مهارة استخلاص النصوص وتنسيق الأجزاء (OCR Transcription Skill)
@@ -101,7 +100,7 @@ disable-model-invocation: true
 
 ### الخطوة الثانية: استخلاص الـ chunks
 1. يحدد الوكيل الرئيسي الـ **chunks** ذات الحالة `"pending"` في ملف المتابعة، ويستبعد أي **chunk** له ملف مؤقت `output_parts/part_N_temp.md` متواجد على القرص تفادياً للتكرار.
-2. يُطلق الوكلاء الفرعيون من نوع `"self"` بالتوازي (بحد أقصى 10 وكلاء في الدفعة الواحدة) لاستخلاص النصوص.
+2. يُطلق الوكلاء الفرعيون من نوع `"self"` بالتوازي حتى السعة المتاحة، وبما لا يجاوز 10 وكلاء في الدفعة الواحدة، لاستخلاص النصوص.
 3. **معيار الإتمام**: التأكد من إتمام كافة الوكلاء الفرعيين لمهامهم وعودتهم بتقرير النجاح في المحادثة.
 
 ### الخطوة الثالثة: التحقق المؤجل (Deferred Validation)
