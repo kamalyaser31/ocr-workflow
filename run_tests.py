@@ -5,9 +5,11 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+from PIL import Image
 from pypdf import PdfWriter
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -37,10 +39,12 @@ def assert_raises(expected_exception, operation):
     raise AssertionError(f"Expected {expected_exception.__name__} to be raised.")
 
 
-def create_pdf(pdf_path: Path, page_count: int) -> None:
+def create_pdf(
+    pdf_path: Path, page_count: int, width: int = 72, height: int = 72
+) -> None:
     writer = PdfWriter()
     for _ in range(page_count):
-        writer.add_blank_page(width=72, height=72)
+        writer.add_blank_page(width=width, height=height)
     with pdf_path.open("wb") as pdf_file:
         writer.write(pdf_file)
 
@@ -103,7 +107,6 @@ def image_render_request(
     *,
     pages_str: str | None = None,
     pages_per_file: int = 20,
-    dpi: int = 72,
 ):
     """Build a real image-render request for a temporary project."""
     return pdf_to_images_module.ImageRenderRequest(
@@ -113,7 +116,6 @@ def image_render_request(
         pages=tuple(pages),
         pages_str=pages_str,
         pages_per_file=pages_per_file,
-        dpi=dpi,
     )
 
 
@@ -223,23 +225,76 @@ def test_external_pdf_split_outputs_stay_in_cwd() -> None:
     in_temporary_project(scenario)
 
 
-def test_pdf_to_images_renders_and_resumes() -> None:
+def test_pdf_to_images_renders_fixed_jpegs_and_resumes() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
         create_pdf(pdf_path, 3)
         request = image_render_request(project_dir, pdf_path, [1, 2, 3])
         pdf_to_images_module.render_images(request)
-        image_paths = sorted(request.output_dir.glob("chunk_*/*.png"))
+        image_paths = sorted(request.output_dir.glob("chunk_*/*.jpg"))
         assert len(image_paths) == 3
+        for image_path in image_paths:
+            with Image.open(image_path) as image:
+                assert image.format == "JPEG"
+                assert image.mode == "RGB"
+                assert image.size == (200, 200)
         first_bytes = [path.read_bytes() for path in image_paths]
         progress = json.loads(
             (request.parts_dir / "progress.json").read_text(encoding="utf-8")
         )
         assert progress["pipeline"] == "images"
+        assert progress["dpi"] == 200
+        assert progress["max_long_edge"] == 2400
+        assert progress["full_page_image_coverage"] == 0.9
+        assert progress["image_extension"] == ".jpg"
+        assert progress["image_format"] == "JPEG"
+        assert progress["jpeg_quality"] == 92
         assert "project_root" not in progress
         assert progress["total_selected_pages"] == 3
         pdf_to_images_module.render_images(request)
         assert [path.read_bytes() for path in image_paths] == first_bytes
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_to_images_caps_long_edge_without_changing_aspect_ratio() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "wide.pdf"
+        create_pdf(pdf_path, 1, width=1440, height=720)
+        request = image_render_request(project_dir, pdf_path, [1])
+
+        pdf_to_images_module.render_images(request)
+
+        image_path = next(request.output_dir.glob("chunk_*/*.jpg"))
+        with Image.open(image_path) as image:
+            assert image.size == (2400, 1200)
+
+    in_temporary_project(scenario)
+
+
+def test_full_page_scan_prevents_upscale_and_preserves_overlay() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "scan.pdf"
+        scan_bytes = BytesIO()
+        Image.new("RGB", (100, 100), "white").save(scan_bytes, format="JPEG")
+        with pdf_to_images_module.fitz.open() as document:
+            page = document.new_page(width=72, height=72)
+            page.insert_image(page.rect, stream=scan_bytes.getvalue())
+            page.draw_rect(
+                pdf_to_images_module.fitz.Rect(0, 0, 8, 8),
+                color=(0, 0, 0),
+                fill=(0, 0, 0),
+                overlay=True,
+            )
+            document.save(pdf_path)
+        request = image_render_request(project_dir, pdf_path, [1])
+
+        pdf_to_images_module.render_images(request)
+
+        image_path = next(request.output_dir.glob("chunk_*/*.jpg"))
+        with Image.open(image_path) as image:
+            assert image.size == (100, 100)
+            assert sum(image.getpixel((5, 5))) < 100
 
     in_temporary_project(scenario)
 
@@ -255,13 +310,13 @@ def test_external_pdf_image_outputs_stay_in_cwd() -> None:
 
         completed_process = run_script(
             "pdf_to_images.py",
-            [str(pdf_path), "--dpi", "72"],
+            [str(pdf_path)],
             workspace_dir,
         )
 
         assert completed_process.returncode == 0, completed_process.stderr
         assert (workspace_dir / "output_parts" / "progress.json").is_file()
-        assert len(list((workspace_dir / "output_images").glob("chunk_*/*.png"))) == 2
+        assert len(list((workspace_dir / "output_images").glob("chunk_*/*.jpg"))) == 2
         assert not (source_dir / "output_parts").exists()
         assert not (source_dir / "output_images").exists()
 
@@ -366,6 +421,34 @@ def test_merge_ignores_untrusted_project_root() -> None:
         assert merge_parts_module.merge_parts(str(progress_path)) is True
         assert (project_dir / "workspace" / "md" / "book.md").is_file()
         assert not (outside_root / "md" / "book.md").exists()
+
+    in_temporary_project(scenario)
+
+
+def test_image_merge_removes_tracked_jpegs() -> None:
+    def scenario(project_dir: Path) -> None:
+        output_dir = project_dir / "output_parts"
+        image_dir = project_dir / "output_images" / "chunk_1"
+        output_dir.mkdir()
+        image_dir.mkdir(parents=True)
+        progress_path = output_dir / "progress.json"
+        chunk = completed_chunk(1, 1)
+        write_progress(
+            progress_path,
+            [chunk],
+            pipeline="images",
+            source_file=str(project_dir / "book.pdf"),
+            image_extension=".jpg",
+        )
+        (output_dir / chunk["output_file"]).write_text(
+            "--- Page 1 ---\nUnique text", encoding="utf-8"
+        )
+        image_path = image_dir / "book_p001.jpg"
+        image_path.write_bytes(b"rendered image")
+
+        assert merge_parts_module.merge_parts(str(progress_path)) is True
+        assert not image_path.exists()
+        assert not (project_dir / "output_images").exists()
 
     in_temporary_project(scenario)
 
@@ -491,7 +574,6 @@ def test_pdf_to_images_preserves_invalid_progress() -> None:
                 output_dir=case_dir / "output_images",
                 parts_dir=parts_dir,
                 pages=(1,),
-                dpi=72,
             )
             assert_raises(
                 RuntimeError,
@@ -621,7 +703,9 @@ TESTS = [
     test_split_preserves_every_nonempty_workspace,
     test_split_writes_canonical_selected_page_state,
     test_external_pdf_split_outputs_stay_in_cwd,
-    test_pdf_to_images_renders_and_resumes,
+    test_pdf_to_images_renders_fixed_jpegs_and_resumes,
+    test_pdf_to_images_caps_long_edge_without_changing_aspect_ratio,
+    test_full_page_scan_prevents_upscale_and_preserves_overlay,
     test_external_pdf_image_outputs_stay_in_cwd,
     test_pdf_to_images_preserves_invalid_progress,
     test_validation_commits_state_before_removing_raw_file,
@@ -629,6 +713,7 @@ TESTS = [
     test_merge_aborts_when_validated_part_is_missing,
     test_merge_rejects_output_path_escape,
     test_merge_ignores_untrusted_project_root,
+    test_image_merge_removes_tracked_jpegs,
     test_merge_preserves_existing_final_output,
     test_merge_allows_identical_page_contents,
     test_convert_to_docx_conversion,

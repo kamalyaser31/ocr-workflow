@@ -17,7 +17,12 @@ from _shared import (  # noqa: E402
     new_chunk,
 )
 
-DEFAULT_DPI = 300
+RENDER_DPI = 200
+MAX_LONG_EDGE_PIXELS = 2400
+FULL_PAGE_IMAGE_COVERAGE = 0.9
+IMAGE_EXTENSION = ".jpg"
+IMAGE_FORMAT = "JPEG"
+JPEG_QUALITY = 92
 
 
 @dataclass(frozen=True)
@@ -28,7 +33,6 @@ class ImageRenderRequest:
     pages: tuple[int, ...]
     pages_str: str | None = None
     pages_per_file: int = 20
-    dpi: int = DEFAULT_DPI
 
 
 def validate_pdf(input_pdf: Path):
@@ -53,29 +57,55 @@ def validate_pdf(input_pdf: Path):
 
 def image_name(source_stem: str, page_number: int) -> str:
     """Return a stable, zero-padded output name."""
-    return f"{source_stem}_p{page_number:03d}.png"
+    return f"{source_stem}_p{page_number:03d}{IMAGE_EXTENSION}"
 
 
 def valid_existing_image(path: Path) -> bool:
-    """Check that an existing output is a readable nonempty PNG."""
+    """Check that an existing output is a readable RGB JPEG."""
     try:
         with Image.open(path) as image:
+            matches_contract = image.format == IMAGE_FORMAT and image.mode == "RGB"
             image.verify()
-        return True
+        return matches_contract
     except (OSError, ValueError):
         return False
 
 
-def render_page(document, page_number: int, output_path: Path, dpi: int) -> None:
-    """Render one 1-based PDF page to PNG using PyMuPDF."""
+def full_page_scan_long_edge(page) -> int | None:
+    """Return the native long edge of a raster covering most of the page."""
+    page_area = page.rect.get_area()
+    qualifying_edges = []
+    for image in page.get_image_info():
+        visible_rect = fitz.Rect(image["bbox"]) & page.rect
+        if visible_rect.get_area() / page_area >= FULL_PAGE_IMAGE_COVERAGE:
+            qualifying_edges.append(max(image["width"], image["height"]))
+    return max(qualifying_edges, default=None)
+
+
+def render_page(document, page_number: int, output_path: Path) -> None:
+    """Render one complete 1-based PDF page to the bounded JPEG contract."""
     page = document[page_number - 1]
-    zoom = dpi / 72
+    longest_page_edge = max(page.rect.width, page.rect.height)
+    scan_long_edge = full_page_scan_long_edge(page)
+    long_edge_limit = min(
+        MAX_LONG_EDGE_PIXELS,
+        scan_long_edge if scan_long_edge is not None else MAX_LONG_EDGE_PIXELS,
+    )
+    zoom = min(RENDER_DPI / 72, long_edge_limit / longest_page_edge)
+    rendered_dpi = round(zoom * 72)
     matrix = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=matrix)
-    try:
-        pix.save(str(output_path))
-    finally:
-        pix = None  # Release memory buffer explicitly
+    pix = page.get_pixmap(
+        matrix=matrix, colorspace=fitz.csRGB, alpha=False, annots=True
+    )
+    with Image.frombytes("RGB", (pix.width, pix.height), pix.samples) as image:
+        image.save(
+            output_path,
+            format=IMAGE_FORMAT,
+            quality=JPEG_QUALITY,
+            optimize=True,
+            subsampling=0,
+            dpi=(rendered_dpi, rendered_dpi),
+        )
 
 
 def get_page_chunk_dir(
@@ -128,6 +158,11 @@ def load_image_progress(
         "final_filename",
         "pipeline",
         "dpi",
+        "max_long_edge",
+        "full_page_image_coverage",
+        "image_extension",
+        "image_format",
+        "jpeg_quality",
         "total_pages",
         "total_selected_pages",
         "is_page_selection",
@@ -174,7 +209,12 @@ def new_image_progress(request: ImageRenderRequest, total_pages: int) -> dict:
         "source_file": str(request.input_pdf),
         "final_filename": final_filename,
         "pipeline": "images",
-        "dpi": request.dpi,
+        "dpi": RENDER_DPI,
+        "max_long_edge": MAX_LONG_EDGE_PIXELS,
+        "full_page_image_coverage": FULL_PAGE_IMAGE_COVERAGE,
+        "image_extension": IMAGE_EXTENSION,
+        "image_format": IMAGE_FORMAT,
+        "jpeg_quality": JPEG_QUALITY,
         "total_pages": total_pages,
         "total_selected_pages": len(request.pages),
         "is_page_selection": bool(request.pages_str),
@@ -216,12 +256,10 @@ def validate_render_request(request: ImageRenderRequest) -> None:
         raise ValueError("Page selection contains no valid pages.")
     if request.pages_per_file < 1:
         raise ValueError("pages_per_file must be at least 1.")
-    if request.dpi < 1:
-        raise ValueError("DPI must be at least 1.")
 
 
 def render_images(request: ImageRenderRequest) -> None:
-    """Render all selected pages into PNGs organized by chunk subdirectories."""
+    """Render all selected pages into JPEGs organized by chunk subdirectories."""
     request = ImageRenderRequest(
         input_pdf=request.input_pdf.resolve(),
         output_dir=request.output_dir.resolve(),
@@ -229,7 +267,6 @@ def render_images(request: ImageRenderRequest) -> None:
         pages=request.pages,
         pages_str=request.pages_str,
         pages_per_file=request.pages_per_file,
-        dpi=request.dpi,
     )
     validate_render_request(request)
     prepare_image_workspace(request)
@@ -257,7 +294,7 @@ def render_images(request: ImageRenderRequest) -> None:
                 continue
             if output_path.exists():
                 output_path.unlink()
-            render_page(document, page_number, output_path, request.dpi)
+            render_page(document, page_number, output_path)
             if not valid_existing_image(output_path):
                 raise RuntimeError(f"Rendered image failed validation: {output_path}")
             print(f"[{idx}/{len(request.pages)}] Created: {output_path}")
@@ -267,7 +304,7 @@ def render_images(request: ImageRenderRequest) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Render selected PDF pages as independent PNG images using PyMuPDF."
+        description="Render complete PDF pages as bounded RGB JPEG images."
     )
     parser.add_argument("input_pdf", type=Path, help="Source PDF path.")
     parser.add_argument(
@@ -291,12 +328,6 @@ def main() -> int:
         type=int,
         default=20,
         help="Pages per chunk (default: 20).",
-    )
-    parser.add_argument(
-        "--dpi",
-        type=int,
-        default=DEFAULT_DPI,
-        help="Rendering resolution (default: 300).",
     )
     parser.add_argument(
         "--info-only", action="store_true", help="Print page count and exit."
@@ -324,9 +355,6 @@ def main() -> int:
         if args.pages_per_file < 1:
             raise ValueError("pages_per_file must be at least 1.")
 
-        if args.dpi < 1:
-            raise ValueError("DPI must be at least 1.")
-
         render_request = ImageRenderRequest(
             input_pdf=resolved_pdf,
             output_dir=resolved_dir,
@@ -334,7 +362,6 @@ def main() -> int:
             pages=tuple(pages),
             pages_str=args.pages,
             pages_per_file=args.pages_per_file,
-            dpi=args.dpi,
         )
         render_images(render_request)
         print(f"Completed: {len(pages)} image(s) in {resolved_dir}")
