@@ -4,7 +4,8 @@ description: >
   Orchestrates end-to-end OCR text extraction from PDF books and documents.
   Use this skill ALWAYS when the user requests text extraction, OCR, transcription,
   book processing, or document conversion from PDF files, even if they don't
-  explicitly name this skill.
+  explicitly name this skill. Runs a pre-flight PDF inspection via pdf-inspector
+  (classification only — no text extraction) to recommend the optimal pipeline.
 disable-model-invocation: true
 ---
 
@@ -15,6 +16,7 @@ disable-model-invocation: true
   - قواعد النسخ والأمانة العلمية وحظر المكتبات الخارجية: **[references/transcription_rules.md](references/transcription_rules.md)**
   - بروتوكولات الفشل والتعافي والتحقق الفردي: **[references/execution_rules.md](references/execution_rules.md)**
   - قواعد بروتوكول تحويل صفحات PDF إلى صور: **[references/pdf_images_rules.md](references/pdf_images_rules.md)**
+  - قواعد الاستطلاع المسبق لملف الـ PDF عبر `pdf-inspector`: **[references/pdf_inspection_rules.md](references/pdf_inspection_rules.md)**
 
 ---
 
@@ -30,6 +32,7 @@ disable-model-invocation: true
 - **المخرجات الافتراضية**: تُكتب مخرجات الدمج النهائي والتحويل إلى مجلدي `md/` و`word/` افتراضياً للحفاظ على نظافة جذر المشروع (ويتم إنشاؤهما تلقائياً).
 - **حظر قراءة السكربتات واستكشاف الأوامر**: يُمنع على الوكيل قراءة الأكواد المصدرية للسكربتات المساعدة أو تشغيل أوامر الاستعلام الاستكشافية (`--help`) لمعرفة المعاملات؛ فخيارات التشغيل موثقة بالكامل في المهارة ومستنداتها المرجعية (`references/`)، ويجب الاعتماد عليها مباشرة دون إجراء استعلامات زائدة في الطرفية.
 - **تحديد مسارات السكربتات المساعدة ديناميكياً**: يستخرج الوكيل المسار المطلق للمجلد الحاضن لملف `SKILL.md` المكتشف في سياق البيئة (سواء أكانت المهارة محلية في مساحة العمل أم مثبتة في المجلد العالمي `~/.gemini/config/skills/`) ويشغّل السكربتات المساعدة بضم مسار مجلد المهارة المطلق إلى `scripts/<script_name>.py` (مثال: `python "<Skill_Dir>/scripts/pdf_to_images.py"`) لضمان العمل بسلاسة واستقلالية تامة في كافة البيئات ومواقع التثبيت.
+- **الاستطلاع المسبق عبر `pdf-inspector` (Pre-flight Inspection)**: يُشغّل الوكيل الرئيسي سكربت [`pdf_inspect.py`](scripts/pdf_inspect.py) قبل تخيير المستخدم لاستخلاص ملف التصنيف (`text-based` / `scanned` / `image-based` / `mixed`) وحقول `pages_needing_ocr` و`is_rtl` و`has_tables` في `output_parts/inspection.json`، ثم يعرض التوصية وفق مصفوفة القرار الموثّقة في **[references/pdf_inspection_rules.md](references/pdf_inspection_rules.md)**. يظل استخلاص النصوص حصراً عبر أداة `view_file` للنموذج؛ فالأداة تكشف بنية الـ PDF ولا تستخرج نصه.
 
 
 ---
@@ -39,6 +42,7 @@ disable-model-invocation: true
 - **المطابقة التامة**: مسار الصور متطابق حرفياً مع مسار الـ PDF المباشر في كافة مراحل المعالجة (إنشاء `output_parts/progress.json` بـ `"pipeline": "images"`، إدارة الوكلاء الفرعيين، التحقق المؤجل عبر `validate_chunk.py`، والتنظيف والدمج التلقائي عبر `merge_parts.py`).
 - **الفارق الوحيد**: تُستبدل خطوة تشغيل `splitt_pdf.py` بتشغيل السكربت `pdf_to_images.py` لتوليد صور الصفحات مُقسّمة في مجلدات فرعية بحسب الأجزاء (`output_images/chunk_1/`, `output_images/chunk_2/`, ...) مع تأسيس ملف التقدم الموحد `output_parts/progress.json`.
 - **آلية الاستخلاص**: بدلاً من قراءة صفحات الـ PDF، يقرأ الوكيل الرئيسي أو الوكلاء الفرعيون صور الصفحات من مجلدات الأجزاء الفردية (`output_images/chunk_N/`) عبر أداة `view_file` مباشرة بنفس ضوابط النسخ والأمانة المنصوص عليها.
+- **ملف التصنيف المشترك**: يُكتب `output_parts/inspection.json` (ناتج خطوة الاستطلاع المسبق) مرة واحدة ويظلّ صالحاً لكلا المسارين؛ يقرأه الوكيل الرئيسي فقط ولا يُمرَّر إلى الوكلاء الفرعيين، ويُحذف تلقائياً ضمن عملية تنظيف `merge_parts.py` عند اكتمال المسار.
 
 
 ## ٣. بروتوكول التنفيذ التتابعي (Sequential Execution Pipeline)
@@ -49,9 +53,9 @@ disable-model-invocation: true
 3. **منع التحايل في رسائل الوكلاء**: يُحظر توجيه الوكلاء الفرعيين إلى تجاهل `Plan Mode` أو مخالفة تعليمات النظام؛ ولا يبدأ إطلاقهم إلا بعد تحقق الوكيل الرئيسي من أن نمط التنفيذ قائم.
 
 ### الخطوة الأولى: تخيير المستخدم والتحقق من الصفحات والتفريع
-1. **تخيير المستخدم**: يطرح الوكيل الرئيسي سؤالاً واضحاً لتحديد مسار العمل المطلوب:
-   * "هل ترغب في استخلاص النصوص مباشرة من ملف الـ PDF (المسار المباشر)، أم تحويل الصفحات إلى صور مستقلة أولاً (مسار صور الـ PDF)؟"
-2. **التحقق من عدد صفحات الملف**: يقرأ الوكيل الرئيسي عدد صفحات ملف الـ PDF أولاً بتشغيل السكربت بالمعامل `--info_only` (مع إمكانية تحديد الصفحات المخصصة عبر معامل `--pages` إن طلب المستخدم ذلك):
+
+#### الخطوة 1.0: الاستطلاع المسبق عبر `pdf-inspector` (Pre-flight Inspection)
+1. **التحقق من عدد الصفحات أولاً**: يقرأ الوكيل الرئيسي عدد صفحات ملف الـ PDF بتشغيل السكربت بالمعامل `--info_only` (مع إمكانية تحديد الصفحات المخصصة عبر معامل `--pages` إن طلب المستخدم ذلك):
    ```bash
    # معالجة كاملة
    python .agents/skills/ocr-transcription/scripts/splitt_pdf.py "pdf/input.pdf" --info_only
@@ -59,7 +63,18 @@ disable-model-invocation: true
    # معالجة صفحات مخصصة
    python .agents/skills/ocr-transcription/scripts/splitt_pdf.py "pdf/input.pdf" --pages "5,8,10-12" --info_only
    ```
-3. **التفريع الإلزامي**:
+2. **تشغيل الاستطلاع المسبق**: بعد التأكد من أن الملف صالح ويحتوي على صفحات، يُشغّل الوكيل الرئيسي سكربت [`pdf_inspect.py`](scripts/pdf_inspect.py) عبر المسار المطلق لاكتشاف بنية الـ PDF:
+   ```bash
+   python "<Skill_Dir>/scripts/pdf_inspect.py" "pdf/input.pdf"
+   ```
+3. **قراءة ملف التصنيف**: يقرأ الوكيل الرئيسي `output_parts/inspection.json` ويستخرج الحقول الجوهرية: `pdf_type`، `confidence`، `pages_needing_ocr`، `is_rtl`، `has_tables`، `has_multi_column`.
+4. **التعامل مع غياب الأداة**: إن غاب `detect-pdf` على PATH، يعرض السكربت رسالة `Error:` كاملة مع تعليمات التثبيت اليدوي (`winget install Rustlang.Rustup` ثم `cargo install pdf-inspector`). يتجمّد الوكيل الرئيسي ويسأل المستخدم: هل يُكمل العمل دون استطلاع (فيُسقط هذه الخطوة ويعتمد التخيير التقليدي) أم يفضّل تثبيت الأداة أولاً؟ يحظر على الوكيل تثبيت أي شيء بصمت.
+
+#### الخطوة 1.1: تخيير المستخدم مع التوصية المستندة إلى التصنيف
+1. **تخيير المستخدم بتوصية**: يطرح الوكيل الرئيسي سؤالاً واضحاً يُرفق بملخّص قصير عن بنية الـ PDF المكتشفة والتوصية وفق **[references/pdf_inspection_rules.md](references/pdf_inspection_rules.md)**:
+   * "نوع الـ PDF المكتشف: `<pdf_type>` بثقة `<confidence>`. عدد الصفحات: `<total_pages>`، منها `<pages_needing_ocr_count>` تحتاج OCR. التوصية: **<المسار>** لتبرير `<سبب التوصية>`."
+   * "هل ترغب في استخلاص النصوص مباشرة من ملف الـ PDF (المسار المباشر)، أم تحويل الصفحات إلى صور مستقلة أولاً (مسار صور الـ PDF)؟ التوصية الحالية هي **<المسار>** لكن يمكنك اختيار غيرها."
+2. **التفريع الإلزامي بعد اختيار المستخدم**:
    - **في حال اختيار المسار المباشر (Direct PDF Extraction)**:
      - **إذا كان إجمالي عدد الصفحات المحددة للمعالجة هو 20 صفحة أو أقل**: يسلك الوكيل **المسار السريع (Fast Track)** الموثق في القسم (٤).
      - **إذا كان إجمالي عدد الصفحات المحددة للمعالجة أكثر من 20 صفحة**: يسلك الوكيل **المسار القياسي المجزأ (Chunked Pipeline)** الموثق في القسم (٥).
