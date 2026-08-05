@@ -111,12 +111,17 @@ def validate_tracked_part(part_num, chunk_map, progress_path, output_dir):
             file=sys.stderr,
         )
         return "skipped"
-    
+
     # استثناء الأجزاء المكتملة مسبقاً إذا كان ملفها الناتج موجوداً
     if part_info.get("status") == "completed" and part_info.get("output_file"):
-        output_path = os.path.join(os.path.dirname(progress_path), part_info["output_file"])
+        output_path = os.path.join(
+            os.path.dirname(progress_path), part_info["output_file"]
+        )
         if os.path.exists(output_path):
-            print(f"[INFO] Part {part_num} already validated and saved as {part_info['output_file']}")
+            print(
+                f"[INFO] Part {part_num} already validated and saved as "
+                f"{part_info['output_file']}"
+            )
             return "passed"
 
     temp_path = resolve_temp_path(part_num, output_dir)
@@ -186,12 +191,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Resolve output directory dynamically relative to progress path if default
+    progress_file = Path(args.progress).resolve()
+    if args.output_dir == "output_parts":
+        output_dir = str(progress_file.parent)
+    else:
+        output_dir = args.output_dir
+
     # Determine which parts to validate
     if args.validate_all:
-        if not os.path.exists(args.progress):
-            print(f"Error: Progress file not found at {args.progress}")
+        if not progress_file.exists():
+            print(f"Error: Progress file not found at {progress_file}")
             sys.exit(1)
-        with open(args.progress, "r", encoding="utf-8") as f:
+        with open(progress_file, "r", encoding="utf-8") as f:
             progress_data = json.load(f)
         part_nums = [chunk["part"] for chunk in progress_data["chunks"]]
         if not part_nums:
@@ -206,7 +218,7 @@ if __name__ == "__main__":
 
     try:
         passed, failed, skipped = run_validation(
-            part_nums, args.progress, args.output_dir
+            part_nums, str(progress_file), output_dir
         )
     except (FileNotFoundError, OSError, ValueError, KeyError) as error:
         print(f"Error: {error}", file=sys.stderr)

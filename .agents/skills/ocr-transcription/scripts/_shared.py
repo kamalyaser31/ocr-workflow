@@ -180,4 +180,3 @@ def load_inspection(parts_dir: Path | str) -> dict | None:
         return json.loads(inspection_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-

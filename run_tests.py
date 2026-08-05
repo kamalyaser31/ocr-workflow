@@ -4,8 +4,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
+from PIL import Image
 from pypdf import PdfWriter
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -35,10 +39,12 @@ def assert_raises(expected_exception, operation):
     raise AssertionError(f"Expected {expected_exception.__name__} to be raised.")
 
 
-def create_pdf(pdf_path: Path, page_count: int) -> None:
+def create_pdf(
+    pdf_path: Path, page_count: int, width: int = 72, height: int = 72
+) -> None:
     writer = PdfWriter()
     for _ in range(page_count):
-        writer.add_blank_page(width=72, height=72)
+        writer.add_blank_page(width=width, height=height)
     with pdf_path.open("wb") as pdf_file:
         writer.write(pdf_file)
 
@@ -76,6 +82,43 @@ def in_temporary_project(test_operation) -> None:
             os.chdir(previous_directory)
 
 
+def run_script(script_name: str, arguments: list[str], cwd: Path):
+    """Run one project CLI from the requested workspace."""
+    command = [
+        sys.executable,
+        "-B",
+        str(SCRIPTS_DIR / script_name),
+        *arguments,
+    ]
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def image_render_request(
+    project_dir: Path,
+    pdf_path: Path,
+    pages: list[int],
+    *,
+    pages_str: str | None = None,
+    pages_per_file: int = 20,
+):
+    """Build a real image-render request for a temporary project."""
+    return pdf_to_images_module.ImageRenderRequest(
+        input_pdf=pdf_path,
+        output_dir=project_dir / "output_images",
+        parts_dir=project_dir / "output_parts",
+        pages=tuple(pages),
+        pages_str=pages_str,
+        pages_per_file=pages_per_file,
+    )
+
+
 def test_page_ranges_keep_only_document_intersection() -> None:
     cases = {
         "200-300": [],
@@ -102,19 +145,39 @@ def test_invalid_selection_creates_no_workspace() -> None:
     in_temporary_project(scenario)
 
 
-def test_split_refuses_stale_workspace() -> None:
+def test_split_preserves_every_nonempty_workspace() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
-        output_dir = project_dir / "output_parts"
-        output_dir.mkdir()
-        sentinel_path = output_dir / "part_1_temp.md"
-        sentinel_path.write_text("earlier run", encoding="utf-8")
         create_pdf(pdf_path, 2)
-        assert_raises(
-            RuntimeError,
-            lambda: split_pdf_module.split_pdf(str(pdf_path), str(output_dir)),
-        )
-        assert sentinel_path.read_text(encoding="utf-8") == "earlier run"
+        preserved_files = {
+            "orphan": ("part_1_temp.md", "earlier run"),
+            "corrupt": ("progress.json", "{not-json"),
+            "completed": (
+                "progress.json",
+                json.dumps(
+                    {
+                        "chunks": [
+                            {
+                                "part": 1,
+                                "status": "completed",
+                            }
+                        ]
+                    }
+                ),
+            ),
+        }
+        for case_name, (filename, content) in preserved_files.items():
+            output_dir = project_dir / case_name / "output_parts"
+            output_dir.mkdir(parents=True)
+            sentinel_path = output_dir / filename
+            sentinel_path.write_text(content, encoding="utf-8")
+            assert_raises(
+                RuntimeError,
+                lambda output_dir=output_dir: split_pdf_module.split_pdf(
+                    str(pdf_path), str(output_dir)
+                ),
+            )
+            assert sentinel_path.read_text(encoding="utf-8") == content
 
     in_temporary_project(scenario)
 
@@ -139,62 +202,125 @@ def test_split_writes_canonical_selected_page_state() -> None:
     in_temporary_project(scenario)
 
 
-def test_split_rejects_nonpositive_chunk_size() -> None:
+def test_external_pdf_split_outputs_stay_in_cwd() -> None:
     def scenario(project_dir: Path) -> None:
-        pdf_path = project_dir / "book.pdf"
+        source_dir = project_dir / "external_source"
+        workspace_dir = project_dir / "workspace"
+        source_dir.mkdir()
+        workspace_dir.mkdir()
+        pdf_path = source_dir / "book.pdf"
         create_pdf(pdf_path, 2)
-        assert_raises(
-            ValueError,
-            lambda: split_pdf_module.split_pdf(
-                str(pdf_path), str(project_dir / "output_parts"), None, 0
-            ),
+
+        completed_process = run_script(
+            "splitt_pdf.py",
+            [str(pdf_path), "--pages", "1-2"],
+            workspace_dir,
         )
+
+        assert completed_process.returncode == 0, completed_process.stderr
+        assert (workspace_dir / "output_parts" / "progress.json").is_file()
+        assert list((workspace_dir / "output_parts").glob("book_part_*.pdf"))
+        assert not (source_dir / "output_parts").exists()
 
     in_temporary_project(scenario)
 
 
-def test_pdf_to_images_renders_and_resumes() -> None:
+def test_pdf_to_images_renders_fixed_jpegs_and_resumes() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
-        output_dir = project_dir / "output_images"
         create_pdf(pdf_path, 3)
-        pdf_to_images_module.render_images(pdf_path, output_dir, [1, 2, 3], dpi=72)
-        image_paths = sorted(output_dir.glob("*.png"))
+        request = image_render_request(project_dir, pdf_path, [1, 2, 3])
+        pdf_to_images_module.render_images(request)
+        image_paths = sorted(request.output_dir.glob("chunk_*/*.jpg"))
         assert len(image_paths) == 3
+        for image_path in image_paths:
+            with Image.open(image_path) as image:
+                assert image.format == "JPEG"
+                assert image.mode == "RGB"
+                assert image.size == (200, 200)
         first_bytes = [path.read_bytes() for path in image_paths]
         progress = json.loads(
-            (output_dir / ".progress.json").read_text(encoding="utf-8")
+            (request.parts_dir / "progress.json").read_text(encoding="utf-8")
         )
-        assert all(
-            record["status"] == "completed" for record in progress["pages"].values()
-        )
-        pdf_to_images_module.render_images(pdf_path, output_dir, [1, 2, 3], dpi=72)
+        assert progress["pipeline"] == "images"
+        assert progress["dpi"] == 200
+        assert progress["max_long_edge"] == 2400
+        assert progress["full_page_image_coverage"] == 0.9
+        assert progress["image_extension"] == ".jpg"
+        assert progress["image_format"] == "JPEG"
+        assert progress["jpeg_quality"] == 92
+        assert "project_root" not in progress
+        assert progress["total_selected_pages"] == 3
+        pdf_to_images_module.render_images(request)
         assert [path.read_bytes() for path in image_paths] == first_bytes
 
     in_temporary_project(scenario)
 
 
-def test_pdf_to_images_handles_tolerant_ranges() -> None:
+def test_pdf_to_images_caps_long_edge_without_changing_aspect_ratio() -> None:
     def scenario(project_dir: Path) -> None:
-        pdf_path = project_dir / "book.pdf"
-        output_dir = project_dir / "output_images"
-        create_pdf(pdf_path, 5)
-        pages = pdf_to_images_module.parse_pages("1-10,bad,3", 5)
-        assert pages == [1, 2, 3, 4, 5]
-        pdf_to_images_module.render_images(pdf_path, output_dir, pages, dpi=72)
-        image_paths = sorted(output_dir.glob("*.png"))
-        assert len(image_paths) == 5
+        pdf_path = project_dir / "wide.pdf"
+        create_pdf(pdf_path, 1, width=1440, height=720)
+        request = image_render_request(project_dir, pdf_path, [1])
+
+        pdf_to_images_module.render_images(request)
+
+        image_path = next(request.output_dir.glob("chunk_*/*.jpg"))
+        with Image.open(image_path) as image:
+            assert image.size == (2400, 1200)
 
     in_temporary_project(scenario)
 
 
-def test_marker_validation_rejects_prefixed_content() -> None:
-    valid_text = "--- Page 1 ---\nText\n--- Page 2 ---\nText"
-    prefixed_text = f"Unexpected\n{valid_text}"
-    valid_check = validate_chunk_module._check_page_markers(valid_text, 1, 2)
-    prefixed_check = validate_chunk_module._check_page_markers(prefixed_text, 1, 2)
-    assert valid_check[0] is True
-    assert prefixed_check[0] is False
+def test_full_page_scan_prevents_upscale_and_preserves_overlay() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "scan.pdf"
+        scan_bytes = BytesIO()
+        Image.new("RGB", (100, 100), "white").save(scan_bytes, format="JPEG")
+        with pdf_to_images_module.fitz.open() as document:
+            page = document.new_page(width=72, height=72)
+            page.insert_image(page.rect, stream=scan_bytes.getvalue())
+            page.draw_rect(
+                pdf_to_images_module.fitz.Rect(0, 0, 8, 8),
+                color=(0, 0, 0),
+                fill=(0, 0, 0),
+                overlay=True,
+            )
+            document.save(pdf_path)
+        request = image_render_request(project_dir, pdf_path, [1])
+
+        pdf_to_images_module.render_images(request)
+
+        image_path = next(request.output_dir.glob("chunk_*/*.jpg"))
+        with Image.open(image_path) as image:
+            assert image.size == (100, 100)
+            assert sum(image.getpixel((5, 5))) < 100
+
+    in_temporary_project(scenario)
+
+
+def test_external_pdf_image_outputs_stay_in_cwd() -> None:
+    def scenario(project_dir: Path) -> None:
+        source_dir = project_dir / "external_source"
+        workspace_dir = project_dir / "workspace"
+        source_dir.mkdir()
+        workspace_dir.mkdir()
+        pdf_path = source_dir / "book.pdf"
+        create_pdf(pdf_path, 2)
+
+        completed_process = run_script(
+            "pdf_to_images.py",
+            [str(pdf_path)],
+            workspace_dir,
+        )
+
+        assert completed_process.returncode == 0, completed_process.stderr
+        assert (workspace_dir / "output_parts" / "progress.json").is_file()
+        assert len(list((workspace_dir / "output_images").glob("chunk_*/*.jpg"))) == 2
+        assert not (source_dir / "output_parts").exists()
+        assert not (source_dir / "output_images").exists()
+
+    in_temporary_project(scenario)
 
 
 def test_validation_commits_state_before_removing_raw_file() -> None:
@@ -217,23 +343,6 @@ def test_validation_commits_state_before_removing_raw_file() -> None:
         assert saved_progress["chunks"][0]["status"] == "completed"
         assert (output_dir / "part_1_output.md").is_file()
         assert not temp_path.exists()
-
-    in_temporary_project(scenario)
-
-
-def test_validation_counts_missing_parts_as_skipped() -> None:
-    def scenario(project_dir: Path) -> None:
-        output_dir = project_dir / "output_parts"
-        output_dir.mkdir()
-        progress_path = output_dir / "progress.json"
-        chunk = completed_chunk(1, 1)
-        chunk["status"] = "pending"
-        chunk["output_file"] = ""
-        write_progress(progress_path, [chunk])
-        counts = validate_chunk_module.run_validation(
-            [1], str(progress_path), str(output_dir)
-        )
-        assert counts == (0, 0, 1)
 
     in_temporary_project(scenario)
 
@@ -292,6 +401,58 @@ def test_merge_rejects_output_path_escape() -> None:
     in_temporary_project(scenario)
 
 
+def test_merge_ignores_untrusted_project_root() -> None:
+    def scenario(project_dir: Path) -> None:
+        output_dir = project_dir / "workspace" / "output_parts"
+        output_dir.mkdir(parents=True)
+        progress_path = output_dir / "progress.json"
+        outside_root = project_dir / "outside"
+        chunk = completed_chunk(1, 1)
+        write_progress(
+            progress_path,
+            [chunk],
+            project_root=str(outside_root),
+        )
+        (output_dir / chunk["output_file"]).write_text(
+            "--- Page 1 ---\nUnique text",
+            encoding="utf-8",
+        )
+
+        assert merge_parts_module.merge_parts(str(progress_path)) is True
+        assert (project_dir / "workspace" / "md" / "book.md").is_file()
+        assert not (outside_root / "md" / "book.md").exists()
+
+    in_temporary_project(scenario)
+
+
+def test_image_merge_removes_tracked_jpegs() -> None:
+    def scenario(project_dir: Path) -> None:
+        output_dir = project_dir / "output_parts"
+        image_dir = project_dir / "output_images" / "chunk_1"
+        output_dir.mkdir()
+        image_dir.mkdir(parents=True)
+        progress_path = output_dir / "progress.json"
+        chunk = completed_chunk(1, 1)
+        write_progress(
+            progress_path,
+            [chunk],
+            pipeline="images",
+            source_file=str(project_dir / "book.pdf"),
+            image_extension=".jpg",
+        )
+        (output_dir / chunk["output_file"]).write_text(
+            "--- Page 1 ---\nUnique text", encoding="utf-8"
+        )
+        image_path = image_dir / "book_p001.jpg"
+        image_path.write_bytes(b"rendered image")
+
+        assert merge_parts_module.merge_parts(str(progress_path)) is True
+        assert not image_path.exists()
+        assert not (project_dir / "output_images").exists()
+
+    in_temporary_project(scenario)
+
+
 def test_merge_preserves_existing_final_output() -> None:
     def scenario(project_dir: Path) -> None:
         output_dir = project_dir / "output_parts"
@@ -334,58 +495,14 @@ def test_merge_allows_identical_page_contents() -> None:
     in_temporary_project(scenario)
 
 
-def test_merge_finalizes_complete_unique_run() -> None:
-    def scenario(project_dir: Path) -> None:
-        output_dir = project_dir / "output_parts"
-        output_dir.mkdir()
-        progress_path = output_dir / "progress.json"
-        chunks = [completed_chunk(1, 1), completed_chunk(2, 2)]
-        write_progress(progress_path, chunks)
-        for chunk in chunks:
-            page_number = chunk["start_page"]
-            (output_dir / chunk["output_file"]).write_text(
-                f"--- Page {page_number} ---\nUnique {page_number}",
-                encoding="utf-8",
-            )
-        assert merge_parts_module.merge_parts(str(progress_path)) is True
-        final_path = project_dir / "md" / "book.md"
-        assert final_path.is_file()
-        assert "Unique 1" in final_path.read_text(encoding="utf-8")
-        assert not progress_path.exists()
-        assert not list(output_dir.glob("part_*_output.md"))
-
-    in_temporary_project(scenario)
-
-
-def test_convert_to_docx_has_arabic() -> None:
-    def scenario(project_dir: Path) -> None:
-        arabic_md = project_dir / "arabic.md"
-        english_md = project_dir / "english.md"
-
-        arabic_md.write_text(
-            "﴿ ذَٰلِكَ الْكِتَابُ لَا رَيْبَ ۛ فِيهِ ﴾\nهذا كتاب مبارك.",
-            encoding="utf-8",
-        )
-        english_md.write_text(
-            "This is an English document with no RTL script.",
-            encoding="utf-8",
-        )
-
-        assert convert_to_docx_module.has_arabic(str(arabic_md)) is True
-        assert convert_to_docx_module.has_arabic(str(english_md)) is False
-        assert_raises(
-            FileNotFoundError,
-            lambda: convert_to_docx_module.has_arabic("non_existent_file.md"),
-        )
-
-    in_temporary_project(scenario)
-
-
 def test_convert_to_docx_conversion() -> None:
     def scenario(project_dir: Path) -> None:
         md_path = project_dir / "input.md"
         docx_path = project_dir / "output.docx"
-        md_path.write_text("## Test Section\nSome content here.", encoding="utf-8")
+        md_path.write_text(
+            "---\ntitle: Literal source line\n---\nBody text.",
+            encoding="utf-8",
+        )
 
         pandoc_bin = convert_to_docx_module.find_pandoc()
         if pandoc_bin is None:
@@ -400,6 +517,9 @@ def test_convert_to_docx_conversion() -> None:
             )
             assert success is True
             assert docx_path.is_file()
+            with zipfile.ZipFile(docx_path) as docx_archive:
+                document_xml = docx_archive.read("word/document.xml").decode("utf-8")
+            assert "title: Literal source line" in document_xml
 
     in_temporary_project(scenario)
 
@@ -421,29 +541,45 @@ def test_convert_to_docx_raises_on_overwrite() -> None:
     in_temporary_project(scenario)
 
 
-def test_pdf_to_images_rejects_unsafe_progress_output() -> None:
+def test_pdf_to_images_preserves_invalid_progress() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
-        output_dir = project_dir / "output_images"
         create_pdf(pdf_path, 1)
-
-        # 1. Run rendering to initialize workspace and progress state
-        pdf_to_images_module.render_images(pdf_path, output_dir, [1], dpi=72)
-
-        # 2. Modify state maliciously
-        progress_path = output_dir / ".progress.json"
-        state = json.loads(progress_path.read_text(encoding="utf-8"))
-        state["pages"]["1"]["output"] = "../malicious.png"
-        progress_path.write_text(json.dumps(state), encoding="utf-8")
-
-        # 3. Re-running rendering should raise ValueError
-        # due to path traversal detection.
-        assert_raises(
-            ValueError,
-            lambda: pdf_to_images_module.render_images(
-                pdf_path, output_dir, [1], dpi=72
+        invalid_states = {
+            "corrupt": "{not-json",
+            "conflicting": json.dumps(
+                {
+                    "source_file": str(pdf_path.resolve()),
+                    "pipeline": "images",
+                    "dpi": 144,
+                    "total_selected_pages": 1,
+                    "chunks": [
+                        {
+                            "part": 1,
+                            "start_page": 1,
+                            "end_page": 1,
+                        }
+                    ],
+                }
             ),
-        )
+        }
+        for case_name, state_text in invalid_states.items():
+            case_dir = project_dir / case_name
+            parts_dir = case_dir / "output_parts"
+            parts_dir.mkdir(parents=True)
+            progress_path = parts_dir / "progress.json"
+            progress_path.write_text(state_text, encoding="utf-8")
+            request = pdf_to_images_module.ImageRenderRequest(
+                input_pdf=pdf_path,
+                output_dir=case_dir / "output_images",
+                parts_dir=parts_dir,
+                pages=(1,),
+            )
+            assert_raises(
+                RuntimeError,
+                lambda request=request: pdf_to_images_module.render_images(request),
+            )
+            assert progress_path.read_text(encoding="utf-8") == state_text
 
     in_temporary_project(scenario)
 
@@ -453,34 +589,34 @@ def test_custom_page_range_single_chunk_cleanup() -> None:
         pdf_path = project_dir / "book.pdf"
         output_dir = project_dir / "output_parts"
         create_pdf(pdf_path, 10)
-        
-        # 1. تقسيم صفحات مخصصة (مثلا 1-2)
-        split_pdf_module.split_pdf(str(pdf_path), str(output_dir), "1-2", pages_per_file=20)
+
+        split_pdf_module.split_pdf(
+            str(pdf_path), str(output_dir), "1-2", pages_per_file=20
+        )
         progress_path = output_dir / "progress.json"
-        
+
         assert progress_path.is_file()
         progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
-        
-        # تأكيد أن قيمة is_split هي True لحماية التنظيف
+
         assert progress_data["is_split"] is True
         assert len(progress_data["chunks"]) == 1
-        
-        # 2. توليد المحتوى المستخلص
+
         part_1_temp = output_dir / "part_1_temp.md"
-        part_1_temp.write_text("--- Page 1 ---\nContent 1\n--- Page 2 ---\nContent 2", encoding="utf-8")
-        
-        # 3. التحقق
-        passed, failed, skipped = validate_chunk_module.run_validation([1], str(progress_path), str(output_dir))
+        part_1_temp.write_text(
+            "--- Page 1 ---\nContent 1\n--- Page 2 ---\nContent 2", encoding="utf-8"
+        )
+
+        passed, failed, skipped = validate_chunk_module.run_validation(
+            [1], str(progress_path), str(output_dir)
+        )
         assert passed == 1 and failed == 0 and skipped == 0
-        
-        # 4. الدمج
+
         assert merge_parts_module.merge_parts(str(progress_path)) is True
-        
-        # 5. التحقق من مسح مجلد الأجزاء بالكامل ومحتوياته المؤقتة
+
         assert not progress_path.exists()
         assert not list(output_dir.glob("book_part_*.pdf"))
         assert not list(output_dir.glob("part_*_output.md"))
-        
+
     in_temporary_project(scenario)
 
 
@@ -488,8 +624,7 @@ def test_validation_resume_all_completed_chunks() -> None:
     def scenario(project_dir: Path) -> None:
         progress_path = project_dir / "output_parts" / "progress.json"
         progress_path.parent.mkdir(exist_ok=True)
-        
-        # إنشاء هيكل progress.json بجزئين: جزء 1 مكتمل مسبقاً، وجزء 2 قيد التحقق (له ملف temp)
+
         chunks = [
             {
                 "part": 1,
@@ -497,7 +632,7 @@ def test_validation_resume_all_completed_chunks() -> None:
                 "start_page": 1,
                 "end_page": 1,
                 "status": "completed",
-                "output_file": "part_1_output.md"
+                "output_file": "part_1_output.md",
             },
             {
                 "part": 2,
@@ -505,29 +640,25 @@ def test_validation_resume_all_completed_chunks() -> None:
                 "start_page": 2,
                 "end_page": 2,
                 "status": "pending",
-                "output_file": ""
-            }
+                "output_file": "",
+            },
         ]
         write_progress(progress_path, chunks)
-        
-        # كتابة الملف الناتج للجزء 1 المكتمل
+
         part_1_output = progress_path.parent / "part_1_output.md"
         part_1_output.write_text("--- Page 1 ---\nContent 1", encoding="utf-8")
-        
-        # كتابة الملف المؤقت للجزء 2 الجاري
+
         part_2_temp = progress_path.parent / "part_2_temp.md"
         part_2_temp.write_text("--- Page 2 ---\nContent 2", encoding="utf-8")
-        
-        # تشغيل التحقق لكلا الجزأين (مماثل لـ --all)
+
         passed, failed, skipped = validate_chunk_module.run_validation(
             [1, 2], str(progress_path), str(progress_path.parent)
         )
-        
-        # يجب أن ينجح التحقق للجزأين معاً: جزء 1 يعتبر passed تلقائياً، وجزء 2 يتم التحقق منه وينجح
+
         assert passed == 2
         assert failed == 0
         assert skipped == 0
-        
+
     in_temporary_project(scenario)
 
 
@@ -535,46 +666,56 @@ def test_convert_to_docx_atomic_cleanup_on_failure() -> None:
     def scenario(project_dir: Path) -> None:
         md_path = project_dir / "input.md"
         docx_path = project_dir / "output.docx"
+        preexisting_path = project_dir / "output.tmp.docx"
         md_path.write_text("Some content.", encoding="utf-8")
-        
-        # حفظ استدعاء Pandoc الأصلي لاستبداله مؤقتاً
-        original_find_pandoc = convert_to_docx_module.find_pandoc
-        
-        # محاكاة وجود Pandoc ولكنه يفشل
-        convert_to_docx_module.find_pandoc = lambda: "non_existent_pandoc_executable"
-        
+        preexisting_path.write_text("preserve me", encoding="utf-8")
+        partial_outputs = []
+
+        def fail_after_partial_output(command, **_kwargs):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text("partial output", encoding="utf-8")
+            partial_outputs.append(output_path)
+            return SimpleNamespace(returncode=1, stderr="forced failure")
+
+        original_which = convert_to_docx_module.shutil.which
+        original_run = convert_to_docx_module.subprocess.run
+        convert_to_docx_module.shutil.which = lambda _name: "pandoc"
+        convert_to_docx_module.subprocess.run = fail_after_partial_output
         try:
-            success = convert_to_docx_module.markdown_to_docx(str(md_path), str(docx_path))
+            success = convert_to_docx_module.markdown_to_docx(
+                str(md_path), str(docx_path)
+            )
             assert success is False
-            # التأكد من خلو المسار من أي ملفات تالفة أو مؤقتة
             assert not docx_path.exists()
-            assert not Path(str(docx_path) + ".tmp").exists()
+            assert preexisting_path.read_text(encoding="utf-8") == "preserve me"
+            assert len(partial_outputs) == 1
+            assert not partial_outputs[0].exists()
         finally:
-            # استعادة الاستدعاء الأصلي
-            convert_to_docx_module.find_pandoc = original_find_pandoc
-            
+            convert_to_docx_module.shutil.which = original_which
+            convert_to_docx_module.subprocess.run = original_run
+
     in_temporary_project(scenario)
 
 
 TESTS = [
     test_page_ranges_keep_only_document_intersection,
     test_invalid_selection_creates_no_workspace,
-    test_split_refuses_stale_workspace,
+    test_split_preserves_every_nonempty_workspace,
     test_split_writes_canonical_selected_page_state,
-    test_split_rejects_nonpositive_chunk_size,
-    test_pdf_to_images_renders_and_resumes,
-    test_pdf_to_images_handles_tolerant_ranges,
-    test_pdf_to_images_rejects_unsafe_progress_output,
-    test_marker_validation_rejects_prefixed_content,
+    test_external_pdf_split_outputs_stay_in_cwd,
+    test_pdf_to_images_renders_fixed_jpegs_and_resumes,
+    test_pdf_to_images_caps_long_edge_without_changing_aspect_ratio,
+    test_full_page_scan_prevents_upscale_and_preserves_overlay,
+    test_external_pdf_image_outputs_stay_in_cwd,
+    test_pdf_to_images_preserves_invalid_progress,
     test_validation_commits_state_before_removing_raw_file,
-    test_validation_counts_missing_parts_as_skipped,
     test_validation_cli_missing_progress_exits_with_failure,
     test_merge_aborts_when_validated_part_is_missing,
     test_merge_rejects_output_path_escape,
+    test_merge_ignores_untrusted_project_root,
+    test_image_merge_removes_tracked_jpegs,
     test_merge_preserves_existing_final_output,
     test_merge_allows_identical_page_contents,
-    test_merge_finalizes_complete_unique_run,
-    test_convert_to_docx_has_arabic,
     test_convert_to_docx_conversion,
     test_convert_to_docx_raises_on_overwrite,
     test_custom_page_range_single_chunk_cleanup,

@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -16,7 +17,22 @@ from _shared import (  # noqa: E402
     new_chunk,
 )
 
-DEFAULT_DPI = 300
+RENDER_DPI = 200
+MAX_LONG_EDGE_PIXELS = 2400
+FULL_PAGE_IMAGE_COVERAGE = 0.9
+IMAGE_EXTENSION = ".jpg"
+IMAGE_FORMAT = "JPEG"
+JPEG_QUALITY = 92
+
+
+@dataclass(frozen=True)
+class ImageRenderRequest:
+    input_pdf: Path
+    output_dir: Path
+    parts_dir: Path
+    pages: tuple[int, ...]
+    pages_str: str | None = None
+    pages_per_file: int = 20
 
 
 def validate_pdf(input_pdf: Path):
@@ -25,43 +41,71 @@ def validate_pdf(input_pdf: Path):
         raise FileNotFoundError(f"PDF file not found: {input_pdf}")
     try:
         document = fitz.open(str(input_pdf))
-        if document.is_encrypted:
-            raise ValueError(
-                f"The PDF file '{input_pdf}' is encrypted or password-protected."
-            )
-        page_count = len(document)
-    except Exception as error:
+    except (fitz.EmptyFileError, fitz.FileDataError, RuntimeError) as error:
         raise RuntimeError(f"Unable to open PDF '{input_pdf}': {error}") from error
+    if document.is_encrypted:
+        document.close()
+        raise ValueError(
+            f"The PDF file '{input_pdf}' is encrypted or password-protected."
+        )
+    page_count = len(document)
     if page_count == 0:
+        document.close()
         raise ValueError(f"PDF contains no pages: {input_pdf}")
     return document, page_count
 
 
 def image_name(source_stem: str, page_number: int) -> str:
     """Return a stable, zero-padded output name."""
-    return f"{source_stem}_p{page_number:03d}.png"
+    return f"{source_stem}_p{page_number:03d}{IMAGE_EXTENSION}"
 
 
 def valid_existing_image(path: Path) -> bool:
-    """Check that an existing output is a readable nonempty PNG."""
+    """Check that an existing output is a readable RGB JPEG."""
     try:
         with Image.open(path) as image:
+            matches_contract = image.format == IMAGE_FORMAT and image.mode == "RGB"
             image.verify()
-        return True
+        return matches_contract
     except (OSError, ValueError):
         return False
 
 
-def render_page(document, page_number: int, output_path: Path, dpi: int) -> None:
-    """Render one 1-based PDF page to PNG using PyMuPDF."""
+def full_page_scan_long_edge(page) -> int | None:
+    """Return the native long edge of a raster covering most of the page."""
+    page_area = page.rect.get_area()
+    qualifying_edges = []
+    for image in page.get_image_info():
+        visible_rect = fitz.Rect(image["bbox"]) & page.rect
+        if visible_rect.get_area() / page_area >= FULL_PAGE_IMAGE_COVERAGE:
+            qualifying_edges.append(max(image["width"], image["height"]))
+    return max(qualifying_edges, default=None)
+
+
+def render_page(document, page_number: int, output_path: Path) -> None:
+    """Render one complete 1-based PDF page to the bounded JPEG contract."""
     page = document[page_number - 1]
-    zoom = dpi / 72
+    longest_page_edge = max(page.rect.width, page.rect.height)
+    scan_long_edge = full_page_scan_long_edge(page)
+    long_edge_limit = min(
+        MAX_LONG_EDGE_PIXELS,
+        scan_long_edge if scan_long_edge is not None else MAX_LONG_EDGE_PIXELS,
+    )
+    zoom = min(RENDER_DPI / 72, long_edge_limit / longest_page_edge)
+    rendered_dpi = round(zoom * 72)
     matrix = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=matrix)
-    try:
-        pix.save(str(output_path))
-    finally:
-        pix = None  # Release memory buffer explicitly
+    pix = page.get_pixmap(
+        matrix=matrix, colorspace=fitz.csRGB, alpha=False, annots=True
+    )
+    with Image.frombytes("RGB", (pix.width, pix.height), pix.samples) as image:
+        image.save(
+            output_path,
+            format=IMAGE_FORMAT,
+            quality=JPEG_QUALITY,
+            optimize=True,
+            subsampling=0,
+            dpi=(rendered_dpi, rendered_dpi),
+        )
 
 
 def get_page_chunk_dir(
@@ -71,110 +115,196 @@ def get_page_chunk_dir(
     for part_number, (start_p, end_p) in enumerate(chunk_ranges, start=1):
         if start_p <= page_number <= end_p:
             return part_number, output_dir / f"chunk_{part_number}"
-    return 1, output_dir / "chunk_1"
+    raise ValueError(f"Page {page_number} is outside the requested chunk ranges.")
+
+
+def image_chunk_ranges(request: ImageRenderRequest) -> list[tuple[int, int]]:
+    """Return the chunk ranges required by one image request."""
+    return build_chunk_ranges(list(request.pages), request.pages_per_file)
+
+
+def image_chunk_matches(state_chunk: object, expected_chunk: dict) -> bool:
+    """Check the durable fields required by downstream OCR stages."""
+    if not isinstance(state_chunk, dict):
+        return False
+    durable_fields = ("part", "filename", "start_page", "end_page")
+    status = state_chunk.get("status")
+    output_file = state_chunk.get("output_file")
+    return (
+        all(state_chunk.get(key) == expected_chunk[key] for key in durable_fields)
+        and status in {"pending", "completed", "failed"}
+        and isinstance(output_file, str)
+        and (status != "completed" or bool(output_file))
+    )
+
+
+def load_image_progress(
+    progress_file: Path,
+    request: ImageRenderRequest,
+    total_pages: int,
+) -> dict:
+    """Load only a state that exactly matches the requested image run."""
+    try:
+        state = json.loads(progress_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Existing progress file is unreadable: {progress_file}"
+        ) from error
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Existing progress file is invalid: {progress_file}")
+
+    expected_state = new_image_progress(request, total_pages)
+    invariant_fields = (
+        "final_filename",
+        "pipeline",
+        "dpi",
+        "max_long_edge",
+        "full_page_image_coverage",
+        "image_extension",
+        "image_format",
+        "jpeg_quality",
+        "total_pages",
+        "total_selected_pages",
+        "is_page_selection",
+        "is_split",
+    )
+    try:
+        source_matches = (
+            Path(state.get("source_file", "")).resolve() == request.input_pdf
+        )
+    except (OSError, TypeError, ValueError):
+        source_matches = False
+    state_chunks = state.get("chunks")
+    expected_chunks = expected_state["chunks"]
+    matches_request = (
+        source_matches
+        and all(state.get(key) == expected_state[key] for key in invariant_fields)
+        and isinstance(state_chunks, list)
+        and len(state_chunks) == len(expected_chunks)
+        and all(
+            image_chunk_matches(state_chunk, expected_chunk)
+            for state_chunk, expected_chunk in zip(state_chunks, expected_chunks)
+        )
+    )
+    if not matches_request:
+        raise RuntimeError(
+            f"Existing progress file belongs to another run: {progress_file}"
+        )
+    return state
+
+
+def new_image_progress(request: ImageRenderRequest, total_pages: int) -> dict:
+    """Build the initial state for an image rendering run."""
+    suffix = make_windows_safe_suffix(list(request.pages)) if request.pages_str else ""
+    final_filename = f"{request.input_pdf.stem}{suffix}.md"
+    chunks = []
+    for part_number, (start_p, end_p) in enumerate(
+        image_chunk_ranges(request), start=1
+    ):
+        first_img = (
+            f"chunk_{part_number}/" f"{image_name(request.input_pdf.stem, start_p)}"
+        )
+        chunks.append(new_chunk(part_number, first_img, start_p, end_p))
+    return {
+        "source_file": str(request.input_pdf),
+        "final_filename": final_filename,
+        "pipeline": "images",
+        "dpi": RENDER_DPI,
+        "max_long_edge": MAX_LONG_EDGE_PIXELS,
+        "full_page_image_coverage": FULL_PAGE_IMAGE_COVERAGE,
+        "image_extension": IMAGE_EXTENSION,
+        "image_format": IMAGE_FORMAT,
+        "jpeg_quality": JPEG_QUALITY,
+        "total_pages": total_pages,
+        "total_selected_pages": len(request.pages),
+        "is_page_selection": bool(request.pages_str),
+        "is_split": len(chunks) > 1 or bool(request.pages_str),
+        "chunks": chunks,
+    }
 
 
 def create_or_load_progress(
     progress_file: Path,
-    input_pdf: Path,
+    request: ImageRenderRequest,
     total_pages: int,
-    pages: list[int],
-    pages_str: str | None,
-    pages_per_file: int,
-    dpi: int,
 ) -> dict:
-    """Create a unified progress state in output_parts/progress.json or load existing."""
-    resolved_pdf = input_pdf.resolve()
-    base_name = resolved_pdf.stem
-    suffix = make_windows_safe_suffix(pages) if pages_str else ""
-    final_filename = f"{base_name}{suffix}.md"
-    chunk_ranges = build_chunk_ranges(pages, pages_per_file)
-
+    """Create image progress or load the exact matching run."""
     if progress_file.exists():
-        try:
-            state = json.loads(progress_file.read_text(encoding="utf-8"))
-            if (
-                Path(state.get("source_file", "")).resolve() == resolved_pdf
-                and state.get("pipeline") == "images"
-            ):
-                return state
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    chunks = []
-    for part_number, (start_p, end_p) in enumerate(chunk_ranges, start=1):
-        first_img = f"chunk_{part_number}/{image_name(base_name, start_p)}"
-        chunks.append(new_chunk(part_number, first_img, start_p, end_p))
-
-    progress_data = {
-        "source_file": str(resolved_pdf),
-        "final_filename": final_filename,
-        "pipeline": "images",
-        "dpi": dpi,
-        "total_pages": total_pages,
-        "total_selected_pages": len(pages),
-        "is_page_selection": bool(pages_str),
-        "is_split": len(chunk_ranges) > 1 or bool(pages_str),
-        "chunks": chunks,
-    }
+        return load_image_progress(progress_file, request, total_pages)
+    progress_data = new_image_progress(request, total_pages)
     write_json_atomic(progress_file, progress_data)
     return progress_data
 
 
-def render_images(
-    input_pdf: Path,
-    output_dir: Path,
-    parts_dir: Path,
-    pages: list[int],
-    pages_str: str | None,
-    pages_per_file: int,
-    dpi: int,
-) -> None:
-    """Render all selected pages into PNGs organized by chunk subdirectories."""
-    resolved_pdf = input_pdf.resolve()
-    resolved_dir = output_dir.resolve()
-    resolved_dir.mkdir(parents=True, exist_ok=True)
-    parts_dir.mkdir(parents=True, exist_ok=True)
+def prepare_image_workspace(request: ImageRenderRequest) -> None:
+    """Create a new image workspace or preserve a tracked resumable run."""
+    progress_file = request.parts_dir / "progress.json"
+    if not progress_file.exists():
+        for directory in (request.parts_dir, request.output_dir):
+            if directory.exists() and any(directory.iterdir()):
+                raise RuntimeError(
+                    f"Output directory '{directory}' is not empty. "
+                    "Preserve or resume that run first."
+                )
+    request.output_dir.mkdir(parents=True, exist_ok=True)
+    request.parts_dir.mkdir(parents=True, exist_ok=True)
 
-    progress_file = parts_dir / "progress.json"
-    document, total_pages = validate_pdf(resolved_pdf)
+
+def validate_render_request(request: ImageRenderRequest) -> None:
+    """Reject image requests that cannot produce a bounded run."""
+    if not request.pages:
+        raise ValueError("Page selection contains no valid pages.")
+    if request.pages_per_file < 1:
+        raise ValueError("pages_per_file must be at least 1.")
+
+
+def render_images(request: ImageRenderRequest) -> None:
+    """Render all selected pages into JPEGs organized by chunk subdirectories."""
+    request = ImageRenderRequest(
+        input_pdf=request.input_pdf.resolve(),
+        output_dir=request.output_dir.resolve(),
+        parts_dir=request.parts_dir.resolve(),
+        pages=request.pages,
+        pages_str=request.pages_str,
+        pages_per_file=request.pages_per_file,
+    )
+    validate_render_request(request)
+    prepare_image_workspace(request)
+    progress_file = request.parts_dir / "progress.json"
+    document, total_pages = validate_pdf(request.input_pdf)
 
     try:
-        progress_data = create_or_load_progress(
+        create_or_load_progress(
             progress_file,
-            resolved_pdf,
+            request,
             total_pages,
-            pages,
-            pages_str,
-            pages_per_file,
-            dpi,
         )
-        chunk_ranges = build_chunk_ranges(pages, pages_per_file)
+        chunk_ranges = image_chunk_ranges(request)
 
-        for idx, page_number in enumerate(pages, start=1):
+        for idx, page_number in enumerate(request.pages, start=1):
             part_number, chunk_dir = get_page_chunk_dir(
-                resolved_dir, page_number, chunk_ranges
+                request.output_dir, page_number, chunk_ranges
             )
             chunk_dir.mkdir(parents=True, exist_ok=True)
 
-            expected_name = image_name(resolved_pdf.stem, page_number)
+            expected_name = image_name(request.input_pdf.stem, page_number)
             output_path = (chunk_dir / expected_name).resolve()
 
             if valid_existing_image(output_path):
                 continue
             if output_path.exists():
                 output_path.unlink()
-            render_page(document, page_number, output_path, dpi)
+            render_page(document, page_number, output_path)
             if not valid_existing_image(output_path):
                 raise RuntimeError(f"Rendered image failed validation: {output_path}")
-            print(f"[{idx}/{len(pages)}] Created: {output_path}")
+            print(f"[{idx}/{len(request.pages)}] Created: {output_path}")
     finally:
         document.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Render selected PDF pages as independent PNG images using PyMuPDF."
+        description="Render complete PDF pages as bounded RGB JPEG images."
     )
     parser.add_argument("input_pdf", type=Path, help="Source PDF path.")
     parser.add_argument(
@@ -200,12 +330,6 @@ def main() -> int:
         help="Pages per chunk (default: 20).",
     )
     parser.add_argument(
-        "--dpi",
-        type=int,
-        default=DEFAULT_DPI,
-        help="Rendering resolution (default: 300).",
-    )
-    parser.add_argument(
         "--info-only", action="store_true", help="Print page count and exit."
     )
     args = parser.parse_args()
@@ -228,18 +352,18 @@ def main() -> int:
         if not pages:
             raise ValueError("Page selection contains no valid pages.")
 
-        if args.dpi < 1:
-            raise ValueError("DPI must be at least 1.")
+        if args.pages_per_file < 1:
+            raise ValueError("pages_per_file must be at least 1.")
 
-        render_images(
-            resolved_pdf,
-            resolved_dir,
-            parts_dir,
-            pages,
-            args.pages,
-            args.pages_per_file,
-            args.dpi,
+        render_request = ImageRenderRequest(
+            input_pdf=resolved_pdf,
+            output_dir=resolved_dir,
+            parts_dir=parts_dir,
+            pages=tuple(pages),
+            pages_str=args.pages,
+            pages_per_file=args.pages_per_file,
         )
+        render_images(render_request)
         print(f"Completed: {len(pages)} image(s) in {resolved_dir}")
         print(f"Workflow tracking file initialized at: {parts_dir / 'progress.json'}")
         return 0

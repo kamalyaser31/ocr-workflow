@@ -8,6 +8,8 @@ from pathlib import Path, PureWindowsPath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _shared import write_text_atomic  # noqa: E402
 
+SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".png"}
+
 
 def resolve_workspace_file(directory: Path, filename: str) -> Path:
     """Resolve a plain filename while keeping it inside its workspace."""
@@ -68,6 +70,14 @@ def merge_part_files(part_paths: list, merged_path: Path) -> None:
     write_text_atomic(merged_path, "\n\n".join(merged_content) + "\n")
 
 
+def tracked_image_extension(progress_data: dict) -> str:
+    """Return the current extension or the legacy PNG extension."""
+    image_extension = progress_data.get("image_extension", ".png")
+    if image_extension not in SUPPORTED_IMAGE_EXTENSIONS:
+        raise ValueError(f"Unsupported tracked image extension: {image_extension!r}")
+    return image_extension
+
+
 def cleanup_completed_run(
     progress_path: Path,
     progress_data: dict,
@@ -85,6 +95,7 @@ def cleanup_completed_run(
     if pipeline == "images":
         images_dir = (project_root / "output_images").resolve()
         source_stem = Path(progress_data.get("source_file", "")).stem
+        image_extension = tracked_image_extension(progress_data)
         if images_dir.is_dir():
             for chunk in progress_data.get("chunks", []):
                 part_num = chunk.get("part", 1)
@@ -93,7 +104,7 @@ def cleanup_completed_run(
                 end_page = chunk.get("end_page", start_page)
 
                 for page_num in range(start_page, end_page + 1):
-                    img_name = f"{source_stem}_p{page_num:03d}.png"
+                    img_name = f"{source_stem}_p{page_num:03d}{image_extension}"
                     img_path = chunk_dir / img_name
                     if img_path.is_file():
                         img_path.unlink()
@@ -121,11 +132,16 @@ def cleanup_completed_run(
             if filename:
                 try:
                     pdf_path = resolve_workspace_file(output_parts_dir, filename)
-                    if pdf_path.exists() and pdf_path.is_file() and pdf_path.name != os.path.basename(progress_data.get("source_file", "")):
+                    source_name = os.path.basename(progress_data.get("source_file", ""))
+                    if pdf_path.is_file() and pdf_path.name != source_name:
                         pdf_path.unlink()
                         print(f"Deleted PDF chunk: {pdf_path.name}")
-                except (ValueError, OSError) as e:
-                    print(f"Warning: Failed to clean up PDF chunk {filename}: {e}", file=sys.stderr)
+                except (ValueError, OSError) as error:
+                    print(
+                        f"Warning: Failed to clean up PDF chunk {filename}: "
+                        f"{error}",
+                        file=sys.stderr,
+                    )
 
     progress_path.unlink()
 
