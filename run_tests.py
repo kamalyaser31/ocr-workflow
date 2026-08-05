@@ -29,6 +29,8 @@ validate_chunk_module = load_script("validate_chunk_module", "validate_chunk.py"
 merge_parts_module = load_script("merge_parts_module", "merge_parts.py")
 pdf_to_images_module = load_script("pdf_to_images_module", "pdf_to_images.py")
 convert_to_docx_module = load_script("convert_to_docx_module", "convert_to_docx.py")
+pdf_inspect_module = load_script("pdf_inspect_module", "pdf_inspect.py")
+
 
 
 def assert_raises(expected_exception, operation):
@@ -697,7 +699,93 @@ def test_convert_to_docx_atomic_cleanup_on_failure() -> None:
     in_temporary_project(scenario)
 
 
+def test_pdf_inspect_missing_binary() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        create_pdf(pdf_path, 2)
+
+        # Mock find_pdf_inspector to return None
+        original_find = pdf_inspect_module.find_pdf_inspector
+        pdf_inspect_module.find_pdf_inspector = lambda: None
+        try:
+            assert_raises(
+                FileNotFoundError,
+                lambda: pdf_inspect_module.run_inspection(
+                    pdf_path,
+                    project_dir / "output_parts",
+                    "full",
+                    None,
+                    False,
+                )
+            )
+        finally:
+            pdf_inspect_module.find_pdf_inspector = original_find
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_inspect_invalid_strategy() -> None:
+    """Strategy is now silently ignored (kept for API compat); run_inspection
+    should succeed without raising ValueError regardless of the value passed."""
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        create_pdf(pdf_path, 2)
+
+        # Mock find_pdf_inspector to simulate missing binary so the call exits
+        # via FileNotFoundError before hitting any strategy guard (none exists).
+        original_find = pdf_inspect_module.find_pdf_inspector
+        pdf_inspect_module.find_pdf_inspector = lambda: None
+        try:
+            assert_raises(
+                FileNotFoundError,
+                lambda: pdf_inspect_module.run_inspection(
+                    pdf_path,
+                    project_dir / "output_parts",
+                    "invalid-strategy-name",
+                    None,
+                    False,
+                )
+            )
+        finally:
+            pdf_inspect_module.find_pdf_inspector = original_find
+
+    in_temporary_project(scenario)
+
+
+def test_pdf_inspect_cli_missing_binary() -> None:
+    def scenario(project_dir: Path) -> None:
+        pdf_path = project_dir / "book.pdf"
+        create_pdf(pdf_path, 2)
+
+        # Override PATH to ensure pdf-inspector is not found
+        env_override = os.environ.copy()
+        env_override["PATH"] = ""
+
+        command = [
+            sys.executable,
+            "-B",
+            str(SCRIPTS_DIR / "pdf_inspect.py"),
+            str(pdf_path),
+        ]
+        completed = subprocess.run(
+            command,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env_override,
+        )
+        assert completed.returncode == 1
+        assert "not found on PATH" in completed.stderr
+        assert "npm install -g @firecrawl/pdf-inspector" in completed.stderr
+
+    in_temporary_project(scenario)
+
+
 TESTS = [
+    test_pdf_inspect_missing_binary,
+    test_pdf_inspect_invalid_strategy,
+    test_pdf_inspect_cli_missing_binary,
     test_page_ranges_keep_only_document_intersection,
     test_invalid_selection_creates_no_workspace,
     test_split_preserves_every_nonempty_workspace,

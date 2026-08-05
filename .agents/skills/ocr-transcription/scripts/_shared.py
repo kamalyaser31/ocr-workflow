@@ -165,3 +165,18 @@ def new_chunk(part, filename, start_page, end_page) -> dict:
         "status": "pending",
         "output_file": "",
     }
+
+
+# Filename used by `pdf_inspect.py` to persist the pre-flight profile.
+INSPECTION_FILENAME = "inspection.json"
+
+
+def load_inspection(parts_dir: Path | str) -> dict | None:
+    """Read the pre-flight inspection profile written by pdf_inspect.py."""
+    inspection_path = Path(parts_dir) / INSPECTION_FILENAME
+    if not inspection_path.is_file():
+        return None
+    try:
+        return json.loads(inspection_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
