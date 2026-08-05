@@ -6,20 +6,17 @@
 
 ## ١. تعليمات التثبيت (Install Prerequisites)
 
-الأداة [`pdf-inspector`](https://github.com/firecrawl/pdf-inspector) أداة Rust تُحمَّل مرة واحدة عبر Cargo؛ لا تتضمّن المكتبة حالياً حزماً ثنائية جاهزة (لا توجد GitHub Releases)، فيلزم توفّر سلسلة أدوات Rust على جهاز المستخدم.
+الأداة [`pdf-inspector`](https://github.com/firecrawl/pdf-inspector) متاحة عبر مدير الحزم npm بصيغة WebAssembly جاهزة للتشغيل دون الحاجة إلى Rust أو أي مترجم:
 
 ```powershell
-# ١. تثبيت Rust مرة واحدة (إن لم يكن مثبتاً)
-winget install Rustlang.Rustup
+# تثبيت الأداة (مرة واحدة)
+npm install -g @firecrawl/pdf-inspector
 
-# ٢. تثبيت أداة pdf-inspector
-cargo install pdf-inspector
-
-# ٣. التحقق من التثبيت
-detect-pdf --version
+# التحقق من التثبيت
+pdf-inspector --version
 ```
 
-- في حال عدم توفّر `detect-pdf` على PATH بعد التثبيت، أضف مجلد `%USERPROFILE%\.cargo\bin` يدوياً إلى متغيّر البيئة `PATH` أو أعد فتح الصدفة لتحميله.
+- في حال عدم توفّر `pdf-inspector` على PATH بعد التثبيت، أعد فتح الصدفة أو تحقق من أن مسار npm العالمي مضاف إلى متغيّر البيئة `PATH`.
 - يحظر على السكربت وعلى الوكيل تثبيت أيٍّ من ذلك بصمت؛ يكتفي بطباعة رسالة خطأ واضحة وإبلاغ المستخدم، انتظاراً لتدخله اليدوي.
 
 ---
@@ -44,7 +41,7 @@ python "<Skill_Dir>/scripts/pdf_inspect.py" "pdf/input.pdf" --json
 
 - **مجلد الإخراج الافتراضي**: `output_parts/` (نفس مجلد `progress.json`).
 - **اسم ملف الإخراج**: `output_parts/inspection.json`.
-- **سياسة الفشل**: عند غياب `detect-pdf` على PATH يطبع السكربت رسالة `Error: The 'detect-pdf' CLI ...` ثم تعليمات التثبيت الكاملة، ويخرج برمز `1` — دون محاولة تثبيت صامتة.
+- **سياسة الفشل**: عند غياب `pdf-inspector` على PATH يطبع السكربت رسالة `Error: The 'pdf-inspector' CLI ...` ثم تعليمات التثبيت الكاملة، ويخرج برمز `1` — دون محاولة تثبيت صامتة.
 
 ---
 
@@ -95,13 +92,13 @@ python "<Skill_Dir>/scripts/pdf_inspect.py" "pdf/input.pdf" --json
 
 يتبع هذا المسار نفس سياسة [**execution_rules.md**](execution_rules.md) المتّبعة مع `pandoc`:
 
-1. إذا غاب `detect-pdf` أو تعطّل (رسالة على stderr أو كود خروج غير صفري):
+1. إذا غاب `pdf-inspector` أو تعطّل (رسالة على stderr أو كود خروج غير صفري):
    - يتجمّد الوكيل الرئيسي فوراً ولا يقدّر النتيجة ولا يتجاوزها.
    - يطبع السكربت رسالة `Error:` كاملة في stderr، ويتضمّن نصّها:
      - اسم الأداة ومسار البحث عنها.
-     - أمر التثبيت اليدوي الكامل (`winget install Rustlang.Rustup` ثم `cargo install pdf-inspector`).
+     - أمر التثبيت اليدوي الكامل: `npm install -g @firecrawl/pdf-inspector`.
    - لا يُحاول السكربت تثبيت أي شيء بصمت، ولا يعدّل البيئة.
-2. إذا أعاد `detect-pdf` مخرجات غير قابلة للتفسير كـ JSON (شذوذ في الإصدار مثلاً):
+2. إذا أعاد `pdf-inspector` مخرجات غير قابلة للتفسير كـ JSON (شذوذ في الإصدار مثلاً):
    - يُسجَّل الخطأ كاملاً ويُعرض على المستخدم.
    - يسأل الوكيل المستخدم صراحة: هل يودّ متابعة العمل **بدون** الاستطلاع المسبق (فيتخطّى الخطوة ويعتمد تخييره التقليدي بين المسارين)، أم يفضّل إصلاح البيئة أولاً؟
 

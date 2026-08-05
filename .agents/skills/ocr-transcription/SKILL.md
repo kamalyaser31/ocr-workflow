@@ -72,7 +72,7 @@ disable-model-invocation: true
    python "<Skill_Dir>/scripts/pdf_inspect.py" "pdf/input.pdf"
    ```
 3. **قراءة ملف التصنيف**: يقرأ الوكيل الرئيسي `output_parts/inspection.json` ويستخرج الحقول الجوهرية: `pdf_type`، `confidence`، `pages_needing_ocr`، `is_rtl`، `has_tables`، `has_multi_column`.
-4. **التعامل مع غياب الأداة**: إن غاب `detect-pdf` على PATH، يعرض السكربت رسالة `Error:` كاملة مع تعليمات التثبيت اليدوي (`winget install Rustlang.Rustup` ثم `cargo install pdf-inspector`). يتجمّد الوكيل الرئيسي ويسأل المستخدم: هل يُكمل العمل دون استطلاع (فيُسقط هذه الخطوة ويعتمد التخيير التقليدي) أم يفضّل تثبيت الأداة أولاً؟ يحظر على الوكيل تثبيت أي شيء بصمت.
+4. **التعامل مع غياب الأداة**: إن غاب `pdf-inspector` على PATH، يعرض السكربت رسالة `Error:` كاملة مع تعليمات التثبيت اليدوي (`npm install -g @firecrawl/pdf-inspector`). يتجمّد الوكيل الرئيسي ويسأل المستخدم: هل يُكمل العمل دون استطلاع (فيُسقط هذه الخطوة ويعتمد التخيير التقليدي) أم يفضّل تثبيت الأداة أولاً؟ يحظر على الوكيل تثبيت أي شيء بصمت.
 
 #### الخطوة 1.1: تخيير المستخدم مع التوصية المستندة إلى التصنيف
 1. **تخيير المستخدم بتوصية**: يطرح الوكيل الرئيسي سؤالاً واضحاً يُرفق بملخّص قصير عن بنية الـ PDF المكتشفة والتوصية وفق **[references/pdf_inspection_rules.md](references/pdf_inspection_rules.md)**:
