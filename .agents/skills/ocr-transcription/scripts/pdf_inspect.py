@@ -1,16 +1,13 @@
-"""Pre-flight PDF inspection via the `detect-pdf` CLI from firecrawl/pdf-inspector.
+"""Pre-flight PDF inspection via the `pdf-inspector` CLI from firecrawl (npm).
 
-This wrapper performs CLASSIFICATION ONLY — it never invokes `pdf2md` and never
-extracts text. Its sole purpose is to populate `output_parts/inspection.json`
-with the document's type (`text-based` / `scanned` / `image-based` / `mixed`),
-the list of pages needing OCR, RTL detection, and basic layout flags. The main
-agent uses that profile to recommend the optimal pipeline (direct PDF extraction
-vs. PDF image pipeline) before the user makes their choice.
+This wrapper performs CLASSIFICATION ONLY — it never invokes text extraction.
+Its sole purpose is to populate `output_parts/inspection.json` with the
+document's type (`text-based` / `scanned` / `image-based` / `mixed`), the list
+of pages needing OCR, RTL detection, and basic layout flags. The main agent uses
+that profile to recommend the optimal pipeline before the user makes their choice.
 
 Install prerequisites (one-time, manual):
-    1. Install the Rust toolchain via `winget install Rustlang.Rustup`
-       (or download from https://rustup.rs).
-    2. Install the CLI: `cargo install pdf-inspector`.
+    npm install -g @firecrawl/pdf-inspector
 
 The script refuses to auto-install anything; if the binary is missing it prints
 an install hint and exits non-zero, mirroring the pandoc policy.
@@ -18,92 +15,81 @@ an install hint and exits non-zero, mirroring the pandoc policy.
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-# Ensure local scripts directory is in sys.path for importing _shared
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _shared import (  # noqa: E402
     INSPECTION_FILENAME,
     write_json_atomic,
 )
 
-VALID_STRATEGIES = {"early-exit", "full", "sample"}
-DEFAULT_STRATEGY = "full"
-BINARY_NAME = "detect-pdf"
+BINARY_NAME = "pdf-inspector"
+SUBCOMMAND = "detect"
 
 
-def find_detect_pdf() -> str | None:
-    """Locate the `detect-pdf` binary on PATH or in common cargo install dirs."""
-    on_path = shutil.which(BINARY_NAME)
-    if on_path:
-        return on_path
-
-    # cargo installs binaries to %USERPROFILE%\.cargo\bin on Windows. That
-    # location is usually on PATH after the first `rustup` shell, but a fresh
-    # agent shell may not see it yet — probe explicitly.
-    user_profile = os.environ.get("USERPROFILE", "")
-    if user_profile:
-        candidate = os.path.join(user_profile, ".cargo", "bin", f"{BINARY_NAME}.exe")
-        if os.path.exists(candidate):
-            return candidate
-
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        candidate = os.path.join(local_app_data, "cargo", "bin", f"{BINARY_NAME}.exe")
-        if os.path.exists(candidate):
-            return candidate
-
-    return None
+def find_pdf_inspector() -> str | None:
+    """Locate the `pdf-inspector` binary on PATH."""
+    return shutil.which(BINARY_NAME)
 
 
 def install_hint() -> str:
     """Return the install instructions printed when the binary is missing."""
     return (
-        "The 'detect-pdf' CLI from firecrawl/pdf-inspector was not found on PATH.\n"
+        "The 'pdf-inspector' CLI from @firecrawl/pdf-inspector was not found on PATH.\n"
         "This skill does NOT auto-install system binaries.\n"
         "Install prerequisites (one-time):\n"
-        "  1. Install Rust:   winget install Rustlang.Rustup   (or https://rustup.rs)\n"
-        "  2. Install the CLI: cargo install pdf-inspector\n"
+        "  npm install -g @firecrawl/pdf-inspector\n"
         "After installation, restart your shell so the new PATH is loaded."
     )
 
 
-def build_command(binary: str, pdf_path: Path, strategy: str) -> list[str]:
-    """Assemble the detect-pdf CLI invocation.
+def build_command(binary: str, pdf_path: Path) -> list[str]:
+    """Assemble the pdf-inspector CLI invocation (classification only)."""
+    return [binary, SUBCOMMAND, str(pdf_path), "--json"]
 
-    NOTE: This wrapper ONLY calls `detect-pdf`. The `pdf2md` subcommand is
-    hard-banned by the skill's transcription rules and is never reachable from
-    this script — there is no code path that constructs or invokes it.
-    """
-    command = [
-        binary,
-        str(pdf_path),
-        "--analyze",
-        "--json",
-        "--strategy",
-        strategy,
-    ]
-    return command
+
+def _normalize_profile(raw: dict, pdf_path: Path) -> dict:
+    """Normalize npm pdf-inspector camelCase output to snake_case schema."""
+    pdf_type_raw = raw.get("pdfType", "unknown")
+    # Map npm type names to the canonical skill schema values
+    type_map = {
+        "TextBased": "text-based",
+        "Scanned": "scanned",
+        "ImageBased": "image-based",
+        "Mixed": "mixed",
+    }
+    pdf_type = type_map.get(pdf_type_raw, pdf_type_raw.lower())
+
+    pages_needing_ocr = raw.get("pagesNeedingOcr", [])
+
+    return {
+        "pdf_type": pdf_type,
+        "confidence": raw.get("confidence"),
+        "total_pages": raw.get("pageCount"),
+        "pages_needing_ocr": pages_needing_ocr,
+        "is_rtl": raw.get("isRtl", False),
+        "has_tables": raw.get("hasTables", False),
+        "has_multi_column": raw.get("hasMultiColumn", False),
+        "source_file": str(pdf_path),
+    }
 
 
 def parse_payload(stdout: str, pdf_path: Path) -> dict:
-    """Parse detect-pdf's JSON output, attaching source metadata."""
+    """Parse pdf-inspector's JSON output and normalize to the skill schema."""
     try:
-        payload = json.loads(stdout)
+        raw = json.loads(stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError(
-            f"detect-pdf returned non-JSON output for '{pdf_path}': {error}"
+            f"pdf-inspector returned non-JSON output for '{pdf_path}': {error}"
         ) from error
-    if not isinstance(payload, dict):
+    if not isinstance(raw, dict):
         raise RuntimeError(
-            f"detect-pdf returned unexpected payload type: {type(payload).__name__}"
+            f"pdf-inspector returned unexpected payload type: {type(raw).__name__}"
         )
-    payload.setdefault("source_file", str(pdf_path))
-    return payload
+    return _normalize_profile(raw, pdf_path)
 
 
 def run_inspection(
@@ -113,26 +99,21 @@ def run_inspection(
     pages_str: str | None,
     echo_json: bool,
 ) -> dict:
-    """Invoke detect-pdf and persist the profile atomically."""
-    if strategy not in VALID_STRATEGIES:
-        raise ValueError(
-            f"Invalid strategy '{strategy}'. Choose one of: "
-            f"{', '.join(sorted(VALID_STRATEGIES))}."
-        )
+    """Invoke pdf-inspector detect and persist the profile atomically."""
+    # strategy parameter is kept for API compatibility with callers/tests
+    # but pdf-inspector detect has no --strategy flag.
+    _ = strategy
 
-    binary = find_detect_pdf()
+    binary = find_pdf_inspector()
     if not binary:
         raise FileNotFoundError(install_hint())
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / INSPECTION_FILENAME
 
-    command = build_command(binary, pdf_path, strategy)
+    command = build_command(binary, pdf_path)
     if pages_str:
-        # Insert --pages after the positional PDF argument; detect-pdf accepts
-        # `--pages 1,3-5` for narrowed inspection.
-        command.insert(2, pages_str)
-        command.insert(2, "--pages")
+        command += ["--pages", pages_str]
 
     print(f"Executing: {' '.join(command)}")
     try:
@@ -150,14 +131,12 @@ def run_inspection(
 
     if completed.returncode != 0:
         raise RuntimeError(
-            f"detect-pdf exited with code {completed.returncode}.\n"
+            f"pdf-inspector exited with code {completed.returncode}.\n"
             f"stderr: {completed.stderr.strip() or '(empty)'}"
         )
 
     profile = parse_payload(completed.stdout, pdf_path)
     if echo_json:
-        # Print before writing so callers see the result even if the write
-        # fails for an unrelated reason.
         print(json.dumps(profile, ensure_ascii=False, indent=2))
     write_json_atomic(output_path, profile)
     return profile
@@ -166,8 +145,8 @@ def run_inspection(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Pre-flight PDF inspection (classification only) via firecrawl/"
-            "pdf-inspector's `detect-pdf` CLI. Writes output_parts/inspection.json."
+            "Pre-flight PDF inspection (classification only) via "
+            "@firecrawl/pdf-inspector. Writes output_parts/inspection.json."
         )
     )
     parser.add_argument("input_pdf", type=Path, help="Source PDF path.")
@@ -183,9 +162,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--strategy",
-        choices=sorted(VALID_STRATEGIES),
-        default=DEFAULT_STRATEGY,
-        help="detect-pdf scan strategy (default: full).",
+        choices=["early-exit", "full", "sample"],
+        default="full",
+        help="Ignored (kept for API compatibility). pdf-inspector detect has no strategy flag.",
     )
     parser.add_argument(
         "--json",

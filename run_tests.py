@@ -703,10 +703,10 @@ def test_pdf_inspect_missing_binary() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
         create_pdf(pdf_path, 2)
-        
-        # Mock find_detect_pdf to return None
-        original_find = pdf_inspect_module.find_detect_pdf
-        pdf_inspect_module.find_detect_pdf = lambda: None
+
+        # Mock find_pdf_inspector to return None
+        original_find = pdf_inspect_module.find_pdf_inspector
+        pdf_inspect_module.find_pdf_inspector = lambda: None
         try:
             assert_raises(
                 FileNotFoundError,
@@ -719,26 +719,35 @@ def test_pdf_inspect_missing_binary() -> None:
                 )
             )
         finally:
-            pdf_inspect_module.find_detect_pdf = original_find
+            pdf_inspect_module.find_pdf_inspector = original_find
 
     in_temporary_project(scenario)
 
 
 def test_pdf_inspect_invalid_strategy() -> None:
+    """Strategy is now silently ignored (kept for API compat); run_inspection
+    should succeed without raising ValueError regardless of the value passed."""
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
         create_pdf(pdf_path, 2)
-        
-        assert_raises(
-            ValueError,
-            lambda: pdf_inspect_module.run_inspection(
-                pdf_path,
-                project_dir / "output_parts",
-                "invalid-strategy-name",
-                None,
-                False,
+
+        # Mock find_pdf_inspector to simulate missing binary so the call exits
+        # via FileNotFoundError before hitting any strategy guard (none exists).
+        original_find = pdf_inspect_module.find_pdf_inspector
+        pdf_inspect_module.find_pdf_inspector = lambda: None
+        try:
+            assert_raises(
+                FileNotFoundError,
+                lambda: pdf_inspect_module.run_inspection(
+                    pdf_path,
+                    project_dir / "output_parts",
+                    "invalid-strategy-name",
+                    None,
+                    False,
+                )
             )
-        )
+        finally:
+            pdf_inspect_module.find_pdf_inspector = original_find
 
     in_temporary_project(scenario)
 
@@ -747,15 +756,11 @@ def test_pdf_inspect_cli_missing_binary() -> None:
     def scenario(project_dir: Path) -> None:
         pdf_path = project_dir / "book.pdf"
         create_pdf(pdf_path, 2)
-        
-        # Override PATH in env to ensure detect-pdf is missing
+
+        # Override PATH to ensure pdf-inspector is not found
         env_override = os.environ.copy()
         env_override["PATH"] = ""
-        # Also clean USERPROFILE and LOCALAPPDATA to prevent cargo fallback checks
-        env_override["USERPROFILE"] = ""
-        env_override["LOCALAPPDATA"] = ""
-        
-        # Run script via CLI
+
         command = [
             sys.executable,
             "-B",
@@ -772,7 +777,7 @@ def test_pdf_inspect_cli_missing_binary() -> None:
         )
         assert completed.returncode == 1
         assert "not found on PATH" in completed.stderr
-        assert "cargo install pdf-inspector" in completed.stderr
+        assert "npm install -g @firecrawl/pdf-inspector" in completed.stderr
 
     in_temporary_project(scenario)
 
